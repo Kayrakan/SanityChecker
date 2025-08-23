@@ -1,0 +1,28 @@
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
+
+client_id = "c332e04b7bba61ec0b2e8d83612aac16"
+name = "SanityChecker"
+handle = "sanitychecker"
+application_url = "https://ec-arthur-cashiers-roof.trycloudflare.com"
+embedded = true
+
+[build]
+include_config_on_deploy = true
+automatically_update_urls_on_dev = true
+
+[webhooks]
+api_version = "2025-07"
+
+  [[webhooks.subscriptions]]
+  topics = [ "app/uninstalled" ]
+  uri = "/webhooks/app/uninstalled"
+
+  [[webhooks.subscriptions]]
+  topics = [ "app/scopes_update" ]
+  uri = "/webhooks/app/scopes_update"
+
+[auth]
+redirect_urls = ["https://ec-arthur-cashiers-roof.trycloudflare.com/auth/callback", "https://ec-arthur-cashiers-roof.trycloudflare.com/auth/shopify/callback", "https://ec-arthur-cashiers-roof.trycloudflare.com/api/auth/callback"]
+
+[pos]
+embedded = false

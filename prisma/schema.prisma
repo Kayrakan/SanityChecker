@@ -1,0 +1,170 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Note that some adapters may set a maximum length for the String type by default, please ensure your strings are long
+// enough when changing adapters.
+// See https://www.prisma.io/docs/orm/reference/prisma-schema-reference#string for more information
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Session {
+  id            String    @id
+  shop          String
+  state         String
+  isOnline      Boolean   @default(false)
+  scope         String?
+  expires       DateTime?
+  accessToken   String
+  userId        BigInt?
+  firstName     String?
+  lastName      String?
+  email         String?
+  accountOwner  Boolean   @default(false)
+  locale        String?
+  collaborator  Boolean?  @default(false)
+  emailVerified Boolean?  @default(false)
+}
+
+/// App data models
+
+model Shop {
+  id        String   @id @default(cuid())
+  domain    String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Optional: human labels
+  name String?
+
+  // Relations
+  settings  Settings?
+  scenarios Scenario[]
+  runs      Run[]
+}
+
+model Settings {
+  id     String @id @default(cuid())
+  shopId String @unique
+  shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  // Scheduling & notifications
+  dailyRunHourUtc   Int     @default(7) // 0-23
+  promoMode         Boolean @default(false)
+  slackWebhookUrl   String?
+  notificationEmail String?
+
+  // Storefront API token (provisioned via Admin API)
+  storefrontAccessToken String?
+  storefrontApiVersion  String? // e.g., "2025-01"
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Scenario {
+  id     String @id @default(cuid())
+  shopId String
+  shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  name   String
+  active Boolean @default(true)
+
+  // Destination
+  countryCode  String // ISO 2-letter, e.g., "US"
+  postalCode   String?
+  provinceCode String?
+
+  // Cart
+  productVariantIds String[] // gid://shopify/ProductVariant/... IDs
+  quantities        Int[] // same length as productVariantIds
+
+  // Optional discount code to apply
+  discountCode String?
+
+  // Expectations (JSON for flexibility)
+  expectations Json? // e.g., {"freeShippingThreshold": 50, "currency": "EUR", "min": 5, "max": 20}
+
+  // Scheduling (optional per-scenario overrides)
+  nextRunAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  runs Run[]
+
+  @@index([shopId])
+  @@index([active])
+}
+
+enum RunStatus {
+  PENDING
+  PASS
+  WARN
+  FAIL
+  ERROR
+  BLOCKED
+}
+
+model Run {
+  id         String   @id @default(cuid())
+  scenarioId String
+  scenario   Scenario @relation(fields: [scenarioId], references: [id], onDelete: Cascade)
+  shopId     String
+  shop       Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  status     RunStatus @default(PENDING)
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+
+  // Raw results from Storefront (rates, groups)
+  result        Json?
+  diagnostics   Json?
+  notes         String?
+  screenshotUrl String?
+
+  createdAt DateTime @default(now())
+
+  @@index([scenarioId])
+  @@index([shopId])
+}
+
+enum JobStatus {
+  QUEUED
+  PROCESSING
+  SUCCEEDED
+  FAILED
+}
+
+enum JobType {
+  SCENARIO_RUN
+  DIGEST_EMAIL
+}
+
+model Job {
+  id         String    @id @default(cuid())
+  type       JobType
+  status     JobStatus @default(QUEUED)
+  shopId     String?
+  scenarioId String?
+  runId      String?
+
+  attempts  Int     @default(0)
+  lastError String?
+
+  scheduledAt DateTime @default(now())
+  availableAt DateTime @default(now())
+  payload     Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status, availableAt])
+  @@index([scenarioId])
+  @@index([shopId])
+}

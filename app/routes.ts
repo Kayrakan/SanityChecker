@@ -1,0 +1,12 @@
+import { flatRoutes } from "@remix-run/fs-routes";
+
+export { loader as appScenariosIndexLoader, action as appScenariosIndexAction } from "./routes/app.scenarios._index";
+export { loader as appScenarioDetailLoader, action as appScenarioDetailAction } from "./routes/app.scenarios.$id";
+export { loader as appRunsIndexLoader } from "./routes/app.runs._index";
+export { loader as appRunDetailLoader, action as appRunDetailAction } from "./routes/app.runs.$id";
+export { loader as appSettingsIndexLoader, action as appSettingsIndexAction } from "./routes/app.settings._index";
+export { loader as internalCronLoader } from "./routes/internal.cron";
+export { loader as internalQueueDrainLoader } from "./routes/internal.queue.drain";
+export { loader as internalDigestLoader } from "./routes/internal.digest";
+
+export default flatRoutes();
