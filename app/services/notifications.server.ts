@@ -41,4 +41,17 @@ export async function sendEmailViaResend(payload: EmailPayload) {
   }
 }
 
+export async function formatDigestText(shopDomain: string, runs: any[]) {
+  const fails = runs.filter((r: any) => r.status === 'FAIL' || r.status === 'ERROR');
+  const warns = runs.filter((r: any) => r.status === 'WARN');
+  const ok = runs.filter((r: any) => r.status === 'PASS');
+  const lines: string[] = [];
+  lines.push(`Shipping Sanity Digest for ${shopDomain}`);
+  lines.push(`PASS: ${ok.length}  WARN: ${warns.length}  FAIL: ${fails.length}`);
+  for (const r of [...fails, ...warns].slice(0, 10)) {
+    lines.push(`- ${r.scenario?.name ?? 'Scenario'} → ${r.status}`);
+  }
+  return lines.join('\n');
+}
+
 

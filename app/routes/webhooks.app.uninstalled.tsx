@@ -13,5 +13,15 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     await db.session.deleteMany({ where: { shop } });
   }
 
+  // Cleanup tenant data (best effort)
+  const shopRow = await db.shop.findUnique({ where: { domain: shop } });
+  if (shopRow) {
+    await db.job.deleteMany({ where: { shopId: shopRow.id } });
+    await db.run.deleteMany({ where: { shopId: shopRow.id } });
+    await db.scenario.deleteMany({ where: { shopId: shopRow.id } });
+    await db.settings.deleteMany({ where: { shopId: shopRow.id } });
+    await db.shop.delete({ where: { id: shopRow.id } });
+  }
+
   return new Response();
 };

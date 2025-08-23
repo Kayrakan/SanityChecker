@@ -2,10 +2,12 @@ import prisma from "../db.server";
 import { unauthenticatedStorefrontClient } from "./shopify-clients.server";
 import { ensureStorefrontToken } from "./storefront-token.server";
 import { createRun, completeRun } from "../models/run.server";
+import { buildAdminLinks } from "./diagnostics-links.server";
 
-type DeliveryOption = { handle: string; title: string; estimatedCost: { amount: string; currencyCode: string } };
+type Money = { amount: string; currencyCode: string };
+type DeliveryOption = { handle: string; title: string; estimatedCost: Money };
 
-function buildDiagnostics(groups: any[], options: DeliveryOption[] | null, expectations?: any) {
+function buildDiagnostics(groups: any[], options: DeliveryOption[] | null, subtotal?: Money | null, expectations?: any) {
   const diags: any[] = [];
   const anyGroupEmpty = (groups ?? []).some((g: any) => (g.deliveryOptions ?? []).length === 0);
   if (!options || options.length === 0 || anyGroupEmpty) {
@@ -28,6 +30,15 @@ function buildDiagnostics(groups: any[], options: DeliveryOption[] | null, expec
         code: "FREE_SHIPPING_MISSING",
         message: `Expected free shipping >= ${expectations.freeShippingThreshold}`,
       });
+    }
+    if (subtotal) {
+      const subtotalNum = Number(subtotal.amount);
+      if (subtotalNum < Number(expectations.freeShippingThreshold)) {
+        diags.push({ code: "SUBTOTAL_BELOW_THRESHOLD", message: `Cart subtotal ${subtotal.amount} < threshold ${expectations.freeShippingThreshold}` });
+      }
+    }
+    if (expectations.currency && subtotal && expectations.currency !== subtotal.currencyCode) {
+      diags.push({ code: "CURRENCY_MISMATCH", message: `Scenario currency ${expectations.currency} vs subtotal currency ${subtotal.currencyCode}` });
     }
   }
   if (expectations?.min != null || expectations?.max != null) {
@@ -125,6 +136,7 @@ export async function runScenarioById(scenarioId: string) {
       query CartDeliveryOptions($cartId: ID!) {
         cart(id: $cartId) {
           id
+          cost { subtotalAmount { amount currencyCode } }
           deliveryGroups {
             id
             deliveryOptions {
@@ -140,12 +152,17 @@ export async function runScenarioById(scenarioId: string) {
     );
     const queryJson = await queryRes.json();
     const groups = queryJson?.data?.cart?.deliveryGroups ?? [];
+    const subtotal: Money | null = queryJson?.data?.cart?.cost?.subtotalAmount ?? null;
     const options: DeliveryOption[] = groups.flatMap((g: any) => g.deliveryOptions ?? []);
 
-    const diagnostics = buildDiagnostics(groups, options, scenario.expectations as any);
+    const diagnostics = buildDiagnostics(groups, options, subtotal, scenario.expectations as any);
+    if (diagnostics.length > 0) {
+      const links = buildAdminLinks(shop.domain, {});
+      diagnostics.push({ code: "ADMIN_LINKS", links });
+    }
     const status = (!options || options.length === 0) ? "FAIL" : (diagnostics.length > 0 ? "WARN" : "PASS");
 
-    await completeRun(run.id, status, { groups, options }, diagnostics);
+    await completeRun(run.id, status, { groups, options, subtotal }, diagnostics);
     return await db.run.findUnique({ where: { id: run.id } });
   } catch (err: any) {
     await completeRun(run.id, "ERROR", null, [{ code: "EXCEPTION", message: err?.message }]);

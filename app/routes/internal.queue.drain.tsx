@@ -3,6 +3,8 @@ import { json } from "@remix-run/node";
 import prisma from "../db.server";
 import { claimNextJob, finishJob } from "../models/job.server";
 import { runScenarioById } from "../services/runner.server";
+import prisma from "../db.server";
+import { formatDigestText, sendEmailViaResend, sendSlack } from "../services/notifications.server";
 
 async function processJob(job: any) {
   if (job.type === "SCENARIO_RUN") {
@@ -10,7 +12,13 @@ async function processJob(job: any) {
     return true;
   }
   if (job.type === "DIGEST_EMAIL") {
-    // TODO: implement digest email (MVP placeholder)
+    const shop = await prisma.shop.findUnique({ where: { id: job.shopId! }, include: { settings: true } });
+    if (!shop) return true;
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const runs = await prisma.run.findMany({ where: { shopId: shop.id, createdAt: { gte: since } }, include: { scenario: true } });
+    const text = await formatDigestText(shop.domain, runs);
+    if (shop.settings?.slackWebhookUrl) await sendSlack(shop.settings.slackWebhookUrl, text);
+    if (shop.settings?.notificationEmail) await sendEmailViaResend({ to: shop.settings.notificationEmail, subject: `Digest: ${shop.domain}`, text });
     return true;
   }
   return true;

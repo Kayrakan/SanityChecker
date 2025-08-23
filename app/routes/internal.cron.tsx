@@ -23,7 +23,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       if (!s.active) continue;
       await enqueueScenarioRun(shop.id, s.id);
     }
+    // Delay digest by 15 minutes to allow runs to complete
+    const fifteen = new Date(Date.now() + 15 * 60 * 1000);
     await enqueueDigestEmail(shop.id);
+    await prisma.job.updateMany({ where: { shopId: shop.id, type: "DIGEST_EMAIL", status: "QUEUED" as any }, data: { availableAt: fifteen } });
   }
 
   return json({ ok: true });

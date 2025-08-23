@@ -1,6 +1,6 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { json, redirect } from "@remix-run/node";
-import { useLoaderData, useNavigation, useSubmit, Link as RemixLink } from "@remix-run/react";
+import { useLoaderData, useNavigation, useSubmit, Link as RemixLink, Form } from "@remix-run/react";
 import { Page, Card, Button, IndexTable, Text, BlockStack, InlineStack, Badge } from "@shopify/polaris";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
@@ -8,7 +8,8 @@ import { enqueueScenarioRun } from "../models/job.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
-  const shop = await prisma.shop.findUnique({ where: { domain: session.shop }, include: { scenarios: true } });
+  const db: any = prisma;
+  const shop = await db.shop.findUnique({ where: { domain: session.shop }, include: { scenarios: true } });
   return json({ scenarios: shop?.scenarios ?? [], shopId: shop?.id ?? null });
 };
 
@@ -17,12 +18,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const form = await request.formData();
   const intent = String(form.get("intent"));
   if (intent === "create") {
-    const shop = await prisma.shop.upsert({
+    const db: any = prisma;
+    const shop = await db.shop.upsert({
       where: { domain: session.shop },
       create: { domain: session.shop, settings: { create: {} } },
       update: {},
     });
-    const scenario = await prisma.scenario.create({
+    const scenario = await db.scenario.create({
       data: {
         shopId: shop.id,
         name: String(form.get("name") || "New scenario"),
@@ -36,7 +38,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
   if (intent === "run") {
     const scenarioId = String(form.get("scenarioId"));
-    const shop = await prisma.shop.upsert({
+    const db: any = prisma;
+    const shop = await db.shop.upsert({
       where: { domain: session.shop },
       create: { domain: session.shop, settings: { create: {} } },
       update: {},
@@ -56,10 +59,10 @@ export default function ScenariosIndex() {
     <Page title="Scenarios">
       <BlockStack gap="400">
         <InlineStack>
-          <form method="post">
+          <Form method="post">
             <input type="hidden" name="intent" value="create" />
             <Button submit variant="primary">New scenario</Button>
-          </form>
+          </Form>
         </InlineStack>
         <Card>
           <IndexTable
@@ -82,11 +85,11 @@ export default function ScenariosIndex() {
                   <Badge tone={s.active ? 'success' : 'critical'}>{s.active ? 'Active' : 'Inactive'}</Badge>
                 </IndexTable.Cell>
                 <IndexTable.Cell>
-                  <form method="post">
+                  <Form method="post">
                     <input type="hidden" name="intent" value="run" />
                     <input type="hidden" name="scenarioId" value={s.id} />
                     <Button submit loading={nav.state !== 'idle'}>Run</Button>
-                  </form>
+                  </Form>
                 </IndexTable.Cell>
               </IndexTable.Row>
             ))}
