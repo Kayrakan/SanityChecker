@@ -1,7 +1,7 @@
 import shopify, { authenticate, sessionStorage, apiVersion } from "../shopify.server";
 import prisma from "../db.server";
 
-async function requestWithRetry(url: string, init: RequestInit, attempts = 3, backoffMs = 200): Promise<Response> {
+export async function requestWithRetry(url: string, init: RequestInit, attempts = 3, backoffMs = 200): Promise<Response> {
   let lastErr: any;
   for (let i = 0; i < attempts; i++) {
     try {
@@ -69,6 +69,30 @@ export async function getAdminClientByShop(shopDomain: string) {
     },
   };
   return { admin, session };
+}
+
+export async function fetchAdminRest(shopDomain: string, path: string, init?: RequestInit) {
+  const offlineId = `offline_${shopDomain}`;
+  let session = await sessionStorage.loadSession(offlineId as any);
+  if (!session) {
+    const last = await (prisma as any).session.findFirst({ where: { shop: shopDomain }, orderBy: { expires: "desc" } });
+    if (last) {
+      session = { ...last, shop: shopDomain } as any;
+    }
+  }
+  if (!session) throw new Error(`Offline admin session not found for ${shopDomain}`);
+  const version = String(apiVersion);
+  const endpoint = `https://${shopDomain}/admin/api/${version}/${path.replace(/^\//, "")}`;
+  const res = await requestWithRetry(endpoint, {
+    method: init?.method || "GET",
+    headers: {
+      ...(init?.headers || {}),
+      "Content-Type": "application/json",
+      "X-Shopify-Access-Token": (session as any).accessToken,
+    },
+    body: init?.body,
+  });
+  return res;
 }
 
 

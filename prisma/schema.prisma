@@ -79,6 +79,7 @@ model Scenario {
   countryCode  String // ISO 2-letter, e.g., "US"
   postalCode   String?
   provinceCode String?
+  city         String?
 
   // Cart
   productVariantIds String[] // gid://shopify/ProductVariant/... IDs
@@ -93,6 +94,14 @@ model Scenario {
   // Scheduling (optional per-scenario overrides)
   nextRunAt DateTime?
 
+  // Optional behavior flags
+  screenshotEnabled Boolean     @default(false)
+  includeInPromo    Boolean     @default(false)
+  alertLevel        AlertLevel  @default(WARN)
+  // Optional alert dampening
+  consecutiveFailThreshold Int? // e.g., 2 means alert only after 2 consecutive fails
+  notes             String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -100,6 +109,11 @@ model Scenario {
 
   @@index([shopId])
   @@index([active])
+}
+
+enum AlertLevel {
+  WARN
+  FAIL
 }
 
 enum RunStatus {

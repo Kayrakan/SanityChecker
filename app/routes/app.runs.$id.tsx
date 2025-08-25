@@ -8,14 +8,16 @@ import { enqueueScenarioRun } from "../models/job.server";
 
 export const loader = async ({ params, request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
-  const run = await prisma.run.findUnique({ where: { id: String(params.id) }, include: { scenario: true } });
+  const db: any = prisma;
+  const run = await db.run.findUnique({ where: { id: String(params.id) }, include: { scenario: true } });
   if (!run) throw new Response("Not Found", { status: 404 });
   return json({ run });
 };
 
 export const action = async ({ params, request }: ActionFunctionArgs) => {
   const { session } = await authenticate.admin(request);
-  const run = await prisma.run.findUnique({ where: { id: String(params.id) }, include: { scenario: true, shop: true } });
+  const db: any = prisma;
+  const run = await db.run.findUnique({ where: { id: String(params.id) }, include: { scenario: true, shop: true } });
   if (!run) throw new Response("Not Found", { status: 404 });
   await enqueueScenarioRun(run.shopId, run.scenarioId);
   return json({ ok: true });
@@ -26,6 +28,20 @@ export default function RunDetail() {
   return (
     <Page title="Run details">
       <BlockStack gap="400">
+        <Card>
+          <Text as="h3" variant="headingMd">Timeline</Text>
+          <Box padding="400" background="bg-surface-active" borderWidth="025" borderRadius="200" borderColor="border" overflowX="scroll">
+            <pre style={{ margin: 0 }}>
+              <code>{JSON.stringify([
+                "cartCreate",
+                "buyerIdentityUpdate",
+                ...(run?.result?.subtotal ? ["discountCodesUpdate (optional)"] : []),
+                "deliveryOptionsQuery",
+                "diagnostics",
+              ], null, 2)}</code>
+            </pre>
+          </Box>
+        </Card>
         <Card>
           <InlineStack align="space-between">
             <Text as="h3" variant="headingMd">Status</Text>

@@ -1,4 +1,7 @@
 -- CreateEnum
+CREATE TYPE "public"."AlertLevel" AS ENUM ('WARN', 'FAIL');
+
+-- CreateEnum
 CREATE TYPE "public"."RunStatus" AS ENUM ('PENDING', 'PASS', 'WARN', 'FAIL', 'ERROR', 'BLOCKED');
 
 -- CreateEnum
@@ -64,11 +67,23 @@ CREATE TABLE "public"."Scenario" (
     "countryCode" TEXT NOT NULL,
     "postalCode" TEXT,
     "provinceCode" TEXT,
+    "city" TEXT,
+    "firstName" TEXT,
+    "lastName" TEXT,
+    "company" TEXT,
+    "address1" TEXT,
+    "address2" TEXT,
+    "phone" TEXT,
     "productVariantIds" TEXT[],
     "quantities" INTEGER[],
     "discountCode" TEXT,
     "expectations" JSONB,
     "nextRunAt" TIMESTAMP(3),
+    "screenshotEnabled" BOOLEAN NOT NULL DEFAULT false,
+    "includeInPromo" BOOLEAN NOT NULL DEFAULT false,
+    "alertLevel" "public"."AlertLevel" NOT NULL DEFAULT 'WARN',
+    "consecutiveFailThreshold" INTEGER,
+    "notes" TEXT,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 

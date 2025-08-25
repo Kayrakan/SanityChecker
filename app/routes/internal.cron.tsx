@@ -21,6 +21,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     if (!shouldRun) continue;
     for (const s of shop.scenarios) {
       if (!s.active) continue;
+      if (settings.promoMode && !s.includeInPromo) continue;
       await enqueueScenarioRun(shop.id, s.id);
     }
     // Delay digest by 15 minutes to allow runs to complete

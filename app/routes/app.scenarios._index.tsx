@@ -1,12 +1,13 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { json, redirect } from "@remix-run/node";
-import { useLoaderData, useNavigation, useSubmit, Link as RemixLink, Form } from "@remix-run/react";
+import { useLoaderData, useFetcher, Link as RemixLink, Form } from "@remix-run/react";
 import { Page, Card, Button, IndexTable, Text, BlockStack, InlineStack, Badge } from "@shopify/polaris";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { enqueueScenarioRun } from "../models/job.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
+  console.log("loader running");
   const { session } = await authenticate.admin(request);
   const db: any = prisma;
   const shop = await db.shop.findUnique({ where: { domain: session.shop }, include: { scenarios: true } });
@@ -52,8 +53,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
 export default function ScenariosIndex() {
   const { scenarios } = useLoaderData<typeof loader>();
-  const submit = useSubmit();
-  const nav = useNavigation();
 
   return (
     <Page title="Scenarios">
@@ -85,11 +84,7 @@ export default function ScenariosIndex() {
                   <Badge tone={s.active ? 'success' : 'critical'}>{s.active ? 'Active' : 'Inactive'}</Badge>
                 </IndexTable.Cell>
                 <IndexTable.Cell>
-                  <Form method="post">
-                    <input type="hidden" name="intent" value="run" />
-                    <input type="hidden" name="scenarioId" value={s.id} />
-                    <Button submit loading={nav.state !== 'idle'}>Run</Button>
-                  </Form>
+                  <RunScenarioButton scenarioId={s.id} />
                 </IndexTable.Cell>
               </IndexTable.Row>
             ))}
@@ -97,6 +92,17 @@ export default function ScenariosIndex() {
         </Card>
       </BlockStack>
     </Page>
+  );
+}
+
+function RunScenarioButton({ scenarioId }: { scenarioId: string }) {
+  const fetcher = useFetcher();
+  return (
+    <fetcher.Form method="post">
+      <input type="hidden" name="intent" value="run" />
+      <input type="hidden" name="scenarioId" value={scenarioId} />
+      <Button submit loading={fetcher.state !== 'idle'}>Run</Button>
+    </fetcher.Form>
   );
 }
 

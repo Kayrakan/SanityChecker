@@ -1,6 +1,6 @@
 import prisma from "../db.server";
 import { unauthenticatedStorefrontClient } from "./shopify-clients.server";
-import { ensureStorefrontToken } from "./storefront-token.server";
+import { ensureStorefrontToken, rotateStorefrontToken } from "./storefront-token.server";
 import { createRun, completeRun } from "../models/run.server";
 import { buildAdminLinks } from "./diagnostics-links.server";
 
@@ -42,12 +42,26 @@ function buildDiagnostics(groups: any[], options: DeliveryOption[] | null, subto
     }
   }
   if (expectations?.min != null || expectations?.max != null) {
-    const prices = (options ?? []).map(o => Number(o.estimatedCost.amount));
+    const opts = (options ?? []);
+    let targetOptions: DeliveryOption[] = opts;
+    const target = (expectations?.boundsTarget || 'CHEAPEST') as string;
+    if (target === 'TITLE') {
+      const needle = String(expectations?.boundsTitle || '').toLowerCase();
+      targetOptions = opts.filter(o => o.title?.toLowerCase().includes(needle));
+      if (needle && targetOptions.length === 0) {
+        diags.push({ code: "TARGET_RATE_NOT_FOUND", message: `No rate with title containing "${expectations.boundsTitle}"` });
+      }
+    }
+    let prices: number[] = targetOptions.map(o => Number(o.estimatedCost.amount));
+    if (target === 'CHEAPEST' && prices.length > 0) {
+      const cheapest = Math.min(...prices);
+      prices = [cheapest];
+    }
     if (expectations.min != null && prices.some(p => p < expectations.min)) {
-      diags.push({ code: "PRICE_TOO_LOW", message: `Some rates below ${expectations.min}` });
+      diags.push({ code: "PRICE_TOO_LOW", message: `Target rate below ${expectations.min}` });
     }
     if (expectations.max != null && prices.some(p => p > expectations.max)) {
-      diags.push({ code: "PRICE_TOO_HIGH", message: `Some rates above ${expectations.max}` });
+      diags.push({ code: "PRICE_TOO_HIGH", message: `Target rate above ${expectations.max}` });
     }
   }
   return diags;
@@ -84,7 +98,7 @@ export async function runScenarioById(scenarioId: string) {
     if (!cartId) throw new Error("Cart creation failed");
 
     // Set buyer identity address
-    const identityRes = await client.graphql(
+    let identityRes = await client.graphql(
       `#graphql
       mutation CartBuyerIdentityUpdate($cartId: ID!, $buyerIdentity: CartBuyerIdentityInput!) {
         cartBuyerIdentityUpdate(cartId: $cartId, buyerIdentity: $buyerIdentity) {
@@ -103,16 +117,59 @@ export async function runScenarioById(scenarioId: string) {
                 countryCode: scenario.countryCode,
                 postalCode: scenario.postalCode ?? undefined,
                 provinceCode: scenario.provinceCode ?? undefined,
+                city: scenario.city ?? undefined,
               },
             },
           ],
         },
       }
     );
-    const identityJson = await identityRes.json();
+    let identityJson = await identityRes.json();
     const userErrors = identityJson?.data?.cartBuyerIdentityUpdate?.userErrors ?? [];
     if (userErrors.length > 0) {
-      throw new Error(`Buyer identity error: ${JSON.stringify(userErrors)}`);
+      // Retry with harmless default personal fields if demanded by API/shop settings
+      const needsRetry = Array.isArray(userErrors) && userErrors.some((e: any) => {
+        const fieldPath = (e?.field || []).join('.') as string;
+        const msg = String(e?.message || '').toLowerCase();
+        return fieldPath.includes('firstName') || fieldPath.includes('lastName') || fieldPath.includes('phone') || msg.includes('first name') || msg.includes('last name') || msg.includes('phone');
+      });
+      if (needsRetry) {
+        identityRes = await client.graphql(
+          `#graphql
+          mutation CartBuyerIdentityUpdate($cartId: ID!, $buyerIdentity: CartBuyerIdentityInput!) {
+            cartBuyerIdentityUpdate(cartId: $cartId, buyerIdentity: $buyerIdentity) {
+              cart { id }
+              userErrors { field message }
+            }
+          }
+          `,
+          {
+            cartId,
+            buyerIdentity: {
+              countryCode: scenario.countryCode,
+              deliveryAddressPreferences: [
+                {
+                  deliveryAddress: {
+                    countryCode: scenario.countryCode,
+                    postalCode: scenario.postalCode ?? undefined,
+                    provinceCode: scenario.provinceCode ?? undefined,
+                    city: scenario.city ?? undefined,
+                    firstName: 'Test',
+                    lastName: 'Runner',
+                    company: 'Sanity Checker',
+                    phone: '0000000000',
+                  },
+                },
+              ],
+            },
+          }
+        );
+        identityJson = await identityRes.json();
+      }
+    }
+    const retryErrors = identityJson?.data?.cartBuyerIdentityUpdate?.userErrors ?? [];
+    if (retryErrors.length > 0) {
+      throw new Error(`Buyer identity error: ${JSON.stringify(retryErrors)}`);
     }
 
     // Query delivery options
@@ -151,6 +208,32 @@ export async function runScenarioById(scenarioId: string) {
       { cartId }
     );
     const queryJson = await queryRes.json();
+    if (queryRes.status === 403) {
+      // Token likely revoked; rotate and retry once
+      const rotated = await rotateStorefrontToken(shop.domain);
+      const retryClient = await unauthenticatedStorefrontClient(shop.domain, rotated.token, rotated.version);
+      const retryRes = await retryClient.graphql(
+        `#graphql
+        query CartDeliveryOptions($cartId: ID!) {
+          cart(id: $cartId) {
+            id
+            cost { subtotalAmount { amount currencyCode } }
+            deliveryGroups { id deliveryOptions { handle title estimatedCost { amount currencyCode } } }
+          }
+        }`,
+        { cartId }
+      );
+      const retryJson = await retryRes.json();
+      if (!retryRes.ok) throw new Error(`Storefront query failed after rotation: ${retryRes.status}`);
+      const groups = retryJson?.data?.cart?.deliveryGroups ?? [];
+      const subtotal: Money | null = retryJson?.data?.cart?.cost?.subtotalAmount ?? null;
+      const options: DeliveryOption[] = groups.flatMap((g: any) => g.deliveryOptions ?? []);
+      const diagnostics = buildDiagnostics(groups, options, subtotal, scenario.expectations as any);
+      diagnostics.push({ code: "TOKEN_ROTATED", message: "Storefront token was rotated due to 403" });
+      const status = (!options || options.length === 0) ? "FAIL" : (diagnostics.length > 0 ? "WARN" : "PASS");
+      await completeRun(run.id, status, { groups, options, subtotal }, diagnostics);
+      return await db.run.findUnique({ where: { id: run.id } });
+    }
     const groups = queryJson?.data?.cart?.deliveryGroups ?? [];
     const subtotal: Money | null = queryJson?.data?.cart?.cost?.subtotalAmount ?? null;
     const options: DeliveryOption[] = groups.flatMap((g: any) => g.deliveryOptions ?? []);
@@ -160,7 +243,14 @@ export async function runScenarioById(scenarioId: string) {
       const links = buildAdminLinks(shop.domain, {});
       diagnostics.push({ code: "ADMIN_LINKS", links });
     }
-    const status = (!options || options.length === 0) ? "FAIL" : (diagnostics.length > 0 ? "WARN" : "PASS");
+    let status: "PASS" | "WARN" | "FAIL";
+    if (!options || options.length === 0) {
+      status = "FAIL";
+    } else if (diagnostics.length > 0) {
+      status = (scenario.alertLevel === "FAIL") ? "FAIL" : "WARN";
+    } else {
+      status = "PASS";
+    }
 
     await completeRun(run.id, status, { groups, options, subtotal }, diagnostics);
     return await db.run.findUnique({ where: { id: run.id } });
