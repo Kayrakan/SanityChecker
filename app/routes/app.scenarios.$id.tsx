@@ -74,10 +74,12 @@ export default function ScenarioDetail() {
   const loading = fetcher.state !== 'idle';
 
   const [countryCode, setCountryCode] = useState<string>(scenario.countryCode);
+  const [name, setName] = useState<string>(scenario.name || '');
   const [postalCode, setPostalCode] = useState<string>(scenario.postalCode ?? '');
   const [provinceCode, setProvinceCode] = useState<string>(scenario.provinceCode ?? '');
   const [city, setCity] = useState<string>(scenario.city ?? '');
   const [discountCode, setDiscountCode] = useState<string>(scenario.discountCode ?? '');
+  const [active, setActive] = useState<boolean>(!!scenario.active);
   const [screenshotEnabled, setScreenshotEnabled] = useState<boolean>(!!scenario.screenshotEnabled);
   const [includeInPromo, setIncludeInPromo] = useState<boolean>(!!scenario.includeInPromo);
   const [alertLevel, setAlertLevel] = useState<string>(scenario.alertLevel || 'WARN');
@@ -90,7 +92,7 @@ export default function ScenarioDetail() {
   const [alertDampen, setAlertDampen] = useState<boolean>(!!scenario.consecutiveFailThreshold && scenario.consecutiveFailThreshold >= 2);
   const [district, setDistrict] = useState<string>(String((scenario.expectations as any)?.district || ''));
 
-  const [provinceOptions, setProvinceOptions] = useState<{ code: string; name: string }[]>(provinces || []);
+  const [provinceOptions, setProvinceOptions] = useState<{ code: string; name: string }[]>(Array.isArray(provinces) ? (provinces as any[]).filter(Boolean) : []);
   const [marketCurrency, setMarketCurrency] = useState<string | undefined>(currency);
   const [marketEnabledState, setMarketEnabledState] = useState<boolean>(!!marketEnabled);
   const [marketsUrl, setMarketsUrl] = useState<string | undefined>(undefined);
@@ -101,6 +103,7 @@ export default function ScenarioDetail() {
     (async () => {
       if (!countryCode) return;
       try {
+        console.log('fetching market info');
         const [marketRes, provRes] = await Promise.all([
           fetch(`/internal/market-info?countryCode=${encodeURIComponent(countryCode)}`),
           fetch(`/internal/provinces?countryCode=${encodeURIComponent(countryCode)}`),
@@ -108,6 +111,8 @@ export default function ScenarioDetail() {
         const marketData = await marketRes.json();
         setMarketCurrency(marketData?.currency);
         setMarketEnabledState(!!marketData?.enabled);
+        console.log('marketData');
+        console.log(marketData);
         setMarketsUrl(marketData?.marketsUrl);
         const provData = await provRes.json();
         setProvinceOptions(Array.isArray(provData?.provinces) ? provData.provinces : []);
@@ -157,17 +162,17 @@ export default function ScenarioDetail() {
           <Form method="post">
             <input type="hidden" name="intent" value="save" />
             <BlockStack gap="200">
-              <TextField label="Name" name="name" defaultValue={scenario.name} autoComplete="off" />
-              <Checkbox label="Active" name="active" defaultChecked={scenario.active} />
+              <TextField label="Name" name="name" value={name} onChange={setName} autoComplete="off" />
+              <Checkbox label="Active" name="active" checked={active} onChange={(checked) => setActive(!!checked)} />
               <InlineStack gap="400">
-                <Select label="Country" name="countryCode" options={countries} value={countryCode} onChange={(v) => { setCountryCode(String(v)); setPostalCode(''); setProvinceCode(''); setCity(''); setDistrict(''); setLookupProvince(undefined); setLookupCity(undefined); setZipStateMismatch(false); }} />
+                <Select label="Country" name="countryCode" options={(Array.isArray(countries) ? (countries as any[]).map((c: any) => ({ label: c.label, value: c.value })) : [])} value={countryCode} onChange={(v) => { setCountryCode(String(v)); setPostalCode(''); setProvinceCode(''); setCity(''); setDistrict(''); setLookupProvince(undefined); setLookupCity(undefined); setZipStateMismatch(false); }} />
                 {(() => {
                   const isHK = countryCode === 'HK';
                   const isAE = countryCode === 'AE';
                   const showPostal = !(isHK || isAE);
                   if (!showPostal) return null;
                   return (
-                    <TextField label="Postal code" name="postalCode" value={postalCode} onChange={setPostalCode} helpText="We’ll auto-fill city/state when possible." onBlur={() => {
+                    <TextField label="Postal code" name="postalCode" autoComplete="off" value={postalCode} onChange={setPostalCode} helpText="We’ll auto-fill city/state when possible." onBlur={() => {
                       if (postalCode && countryCode) {
                         const url = `/internal/address-lookup?countryCode=${encodeURIComponent(countryCode)}&postalCode=${encodeURIComponent(postalCode)}`;
                         fetcher.load(url);
@@ -184,12 +189,12 @@ export default function ScenarioDetail() {
                   return provinceOptions.length > 0 ? (
                     <Select label={provinceLabel} name="provinceCode" options={provinceOptions.map(s => ({ label: s.name, value: s.code }))} value={provinceCode} onChange={(v) => setProvinceCode(String(v))} />
                   ) : (
-                    <TextField label={provinceLabel} name="provinceCode" value={provinceCode} onChange={setProvinceCode} />
+                    <TextField label={provinceLabel} name="provinceCode" autoComplete="off" value={provinceCode} onChange={setProvinceCode} />
                   );
                 })()}
-                <TextField label={'City'} name="city" value={city} onChange={setCity} />
+                <TextField label={'City'} name="city" autoComplete="off" value={city} onChange={setCity} />
                 {countryCode === 'TR' ? (
-                  <TextField label="District (ilçe)" name="district" value={district} onChange={setDistrict} />
+                  <TextField label="District (ilçe)" name="district" autoComplete="off" value={district} onChange={setDistrict} />
                 ) : null}
               </InlineStack>
               <InlineStack gap="200">
@@ -199,7 +204,7 @@ export default function ScenarioDetail() {
                 ) : null}
               </InlineStack>
               {zipStateMismatch ? (
-                <Text tone="warning" variant="bodySm" as="p">Postal code and State appear to mismatch; double-check destination.</Text>
+                <Text tone="caution" variant="bodySm" as="p">Postal code and State appear to mismatch; double-check destination.</Text>
               ) : null}
               <InlineStack>
                 <Button variant="plain" onClick={async () => {
@@ -213,8 +218,8 @@ export default function ScenarioDetail() {
               </InlineStack>
               <InlineStack gap="400">
                 <TextField label="Discount code" name="discountCode" value={discountCode} onChange={setDiscountCode} autoComplete="off" />
-                <Checkbox label="Screenshot proof" name="screenshotEnabled" checked={!!screenshotEnabled} onChange={(_, v) => setScreenshotEnabled(v)} helpText="Takes a shipping-step screenshot; slightly slower, great for support." />
-                <Checkbox label="Run hourly during promo mode" name="includeInPromo" checked={!!includeInPromo} onChange={(_, v) => setIncludeInPromo(v)} helpText="When promo mode is on, this scenario runs hourly." />
+                <Checkbox label="Screenshot proof" name="screenshotEnabled" checked={!!screenshotEnabled} onChange={(checked) => setScreenshotEnabled(!!checked)} helpText="Takes a shipping-step screenshot; slightly slower, great for support." />
+                <Checkbox label="Run hourly during promo mode" name="includeInPromo" checked={!!includeInPromo} onChange={(checked) => setIncludeInPromo(!!checked)} helpText="When promo mode is on, this scenario runs hourly." />
               </InlineStack>
               <InlineStack gap="400">
                 <Select
@@ -226,9 +231,9 @@ export default function ScenarioDetail() {
                 />
               </InlineStack>
               <InlineStack gap="400">
-                <TextField label={`Free shipping threshold (${marketCurrency || ''})`} name="freeShippingThreshold" type="number" value={freeShip} onChange={setFreeShip} />
-                <TextField label={`Expected price min (${marketCurrency || ''})`} name="minPrice" type="number" value={minPrice} onChange={setMinPrice} />
-                <TextField label={`Expected price max (${marketCurrency || ''})`} name="maxPrice" type="number" value={maxPrice} onChange={setMaxPrice} />
+                <TextField label={`Free shipping threshold (${marketCurrency || ''})`} name="freeShippingThreshold" autoComplete="off" type="number" value={freeShip} onChange={setFreeShip} />
+                <TextField label={`Expected price min (${marketCurrency || ''})`} name="minPrice" autoComplete="off" type="number" value={minPrice} onChange={setMinPrice} />
+                <TextField label={`Expected price max (${marketCurrency || ''})`} name="maxPrice" autoComplete="off" type="number" value={maxPrice} onChange={setMaxPrice} />
               </InlineStack>
               <InlineStack gap="400">
                 <Select
@@ -239,13 +244,13 @@ export default function ScenarioDetail() {
                   onChange={(v) => setBoundsTarget(String(v))}
                 />
                 {boundsTarget === 'TITLE' ? (
-                  <TextField label="Title contains" name="boundsTitle" value={boundsTitle} onChange={setBoundsTitle} placeholder="Standard, Ground, Economy" />
+                  <TextField label="Title contains" name="boundsTitle" autoComplete="off" value={boundsTitle} onChange={setBoundsTitle} placeholder="Standard, Ground, Economy" />
                 ) : null}
               </InlineStack>
               <InlineStack>
-                <Checkbox label="Only alert after 2 consecutive fails" name="alertDampen" checked={alertDampen} onChange={(_, v) => setAlertDampen(v)} />
+                <Checkbox label="Only alert after 2 consecutive fails" name="alertDampen" checked={alertDampen} onChange={(checked) => setAlertDampen(!!checked)} />
               </InlineStack>
-              <TextField label="Notes" name="notes" defaultValue={scenario.notes ?? ''} autoComplete="off" multiline={3} />
+              <TextField label="Notes" name="notes" value={notes} onChange={setNotes} autoComplete="off" multiline={3} />
               <InlineStack gap="400">
                 <Button submit variant="primary">Save</Button>
                 <Button submit disabled={(() => {
@@ -278,20 +283,20 @@ export default function ScenarioDetail() {
             <BlockStack gap="100">
               <Text variant="bodySm" as="p">Summary:</Text>
               <InlineStack gap="200">
-                {variants.map((v, idx) => (
-                  <span key={v.id} style={{ border: '1px solid var(--p-color-border)', borderRadius: 12, padding: '2px 8px' }}>
-                    {v.productTitle} {v.title ? `(${v.title})` : ''} ×{scenario.quantities[idx] || 1} {v.grams ? `(${v.grams >= 1000 ? (v.grams/1000).toFixed(1)+' kg' : v.grams+' g'})` : ''}
+                {(Array.isArray(variants) ? variants : []).filter(Boolean).map((v: any, idx: number) => (
+                  <span key={v?.id ?? idx} style={{ border: '1px solid var(--p-color-border)', borderRadius: 12, padding: '2px 8px' }}>
+                    {(v?.productTitle ?? 'Item')} {v?.title ? `(${v.title})` : ''} ×{scenario.quantities[idx] || 1} {v?.grams ? `(${v.grams >= 1000 ? (v.grams/1000).toFixed(1)+' kg' : v.grams+' g'})` : ''}
                   </span>
                 ))}
               </InlineStack>
               {Array.isArray(profiles) && profiles.length > 0 ? (
                 <Text variant="bodySm" as="p">Profiles covered: {profiles.join(', ')}</Text>
               ) : null}
-              {variants.some(v => !v.requiresShipping || (v.grams ?? 0) === 0) ? (
-                <Text tone="warning" variant="bodySm" as="p">Some items are non-shippable or have 0 weight; rates may be missing.</Text>
+              {(Array.isArray(variants) ? variants : []).some((v: any) => !v?.requiresShipping || (v?.grams ?? 0) === 0) ? (
+                <Text tone="caution" variant="bodySm" as="p">Some items are non-shippable or have 0 weight; rates may be missing.</Text>
               ) : null}
               {Number(freeShip || '0') > 0 && estimatedSubtotal > 0 && estimatedSubtotal < Number(freeShip) ? (
-                <Text tone="warning" variant="bodySm" as="p">This cart is below the threshold; free-shipping won’t be validated.</Text>
+                <Text tone="caution" variant="bodySm" as="p">This cart is below the threshold; free-shipping won’t be validated.</Text>
               ) : null}
             </BlockStack>
           ) : null}

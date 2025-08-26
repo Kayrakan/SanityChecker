@@ -8,5 +8,8 @@ export { loader as appSettingsIndexLoader, action as appSettingsIndexAction } fr
 export { loader as internalCronLoader } from "./routes/internal.cron";
 export { loader as internalQueueDrainLoader } from "./routes/internal.queue.drain";
 export { loader as internalDigestLoader } from "./routes/internal.digest";
+export { loader as internalMarketInfoLoader } from "./routes/internal.market-info";
+export { loader as internalProvincesLoader } from "./routes/internal.provinces";
+export { loader as internalAddressLookupLoader } from "./routes/internal.address-lookup";
 
 export default flatRoutes();

@@ -71,6 +71,26 @@ export async function getAdminClientByShop(shopDomain: string) {
   return { admin, session };
 }
 
+export async function adminGraphqlJson<T = any>(admin: { graphql: (q: string, v?: any) => Promise<Response> }, query: string, variables?: Record<string, any>): Promise<T> {
+  const res = await admin.graphql(query, variables);
+  const text = await res.text();
+  let json: any;
+  try {
+    json = JSON.parse(text);
+  } catch (err) {
+    const errMsg = String(text || '').slice(0, 2000);
+    throw new Error(`Invalid JSON from Shopify GraphQL: ${errMsg}`);
+  }
+  if (json && Array.isArray(json.errors) && json.errors.length > 0) {
+    const message = json.errors.map((e: any) => e?.message || 'Unknown').join('; ');
+    const error = new Error(`Shopify GraphQL errors: ${message}`) as any;
+    error.errors = json.errors;
+    error.data = json.data;
+    throw error;
+  }
+  return json as T;
+}
+
 export async function fetchAdminRest(shopDomain: string, path: string, init?: RequestInit) {
   const offlineId = `offline_${shopDomain}`;
   let session = await sessionStorage.loadSession(offlineId as any);
