@@ -1,6 +1,7 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { json, redirect } from "@remix-run/node";
 import { Form, useLoaderData, useFetcher } from "@remix-run/react";
+import { useNavigate } from "@remix-run/react";
 import { Page, Card, TextField, Button, BlockStack, InlineStack, Checkbox, Text, Select, InlineError } from "@shopify/polaris";
 import { useEffect, useMemo, useState } from "react";
 import { authenticate } from "../shopify.server";
@@ -14,6 +15,10 @@ export const loader = async ({ params, request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const scenario = await prisma.scenario.findUnique({ where: { id: String(params.id) } });
   if (!scenario) throw new Response("Not Found", { status: 404 });
+  const shop = await prisma.shop.findUnique({ where: { domain: session.shop } });
+  if (!shop || scenario.shopId !== shop.id) throw new Response("Forbidden", { status: 403 });
+  const url = new URL(request.url);
+  const isNew = url.searchParams.get('new') === '1';
   const [countries, provinces, currency, marketEnabled, variants, profiles] = await Promise.all([
     listShopifyCountries(session.shop).catch(() => []),
     listShopifyProvinces(session.shop, scenario.countryCode).catch(() => []),
@@ -22,36 +27,60 @@ export const loader = async ({ params, request }: LoaderFunctionArgs) => {
     fetchVariantInfos(session.shop, scenario.productVariantIds || []).catch(() => []),
     fetchDeliveryProfilesForVariants(session.shop, scenario.productVariantIds || []).catch(() => []),
   ]);
-  return json({ scenario, countries, provinces, currency, marketEnabled, variants, profiles });
+  return json({ scenario, countries, provinces, currency, marketEnabled, variants, profiles, isNew });
 };
 
 export const action = async ({ params, request }: ActionFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const form = await request.formData();
+  const isTruthy = (value: FormDataEntryValue | null) => {
+    if (value == null) return false;
+    const normalized = String(value).toLowerCase();
+    return normalized === "on" || normalized === "true" || normalized === "1" || normalized === "yes";
+  };
+  const getBoolean = (name: string) => {
+    const values = form.getAll(name);
+    if (!values || values.length === 0) return false;
+    return isTruthy(values[values.length - 1] ?? null);
+  };
   const id = String(params.id);
   const intent = String(form.get("intent"));
+  // ownership guard
+  const scenario = await prisma.scenario.findUnique({ where: { id } });
+  const shop = await prisma.shop.findUnique({ where: { domain: session.shop } });
+  if (!scenario || !shop || scenario.shopId !== shop.id) {
+    throw new Response("Forbidden", { status: 403 });
+  }
+  if (intent === "delete") {
+    await prisma.scenario.delete({ where: { id } });
+    return redirect(`/app/scenarios`);
+  }
   if (intent === "save") {
     await prisma.scenario.update({
       where: { id },
       data: {
         name: String(form.get("name")),
-        active: form.get("active") === "on",
+        active: getBoolean("active"),
         countryCode: String(form.get("countryCode")),
         postalCode: String(form.get("postalCode") || ""),
         provinceCode: String(form.get("provinceCode") || ""),
         city: String(form.get("city") || ""),
         discountCode: String(form.get("discountCode") || "") || undefined,
-        expectations: {
-          freeShippingThreshold: form.get("freeShippingThreshold") ? Number(form.get("freeShippingThreshold")) : undefined,
-          min: form.get("minPrice") ? Number(form.get("minPrice")) : undefined,
-          max: form.get("maxPrice") ? Number(form.get("maxPrice")) : undefined,
-          boundsTarget: String(form.get("boundsTarget") || "CHEAPEST"),
-          boundsTitle: String(form.get("boundsTitle") || "") || undefined,
-        } as any,
-        screenshotEnabled: form.get("screenshotEnabled") === "on",
-        includeInPromo: form.get("includeInPromo") === "on",
+        expectations: (() => {
+          const exp: any = {
+            freeShippingThreshold: form.get("freeShippingThreshold") ? Number(form.get("freeShippingThreshold")) : undefined,
+            min: form.get("minPrice") ? Number(form.get("minPrice")) : undefined,
+            max: form.get("maxPrice") ? Number(form.get("maxPrice")) : undefined,
+            boundsTarget: String(form.get("boundsTarget") || "CHEAPEST"),
+            boundsTitle: String(form.get("boundsTitle") || "") || undefined,
+            district: String(form.get("district") || "") || undefined,
+          };
+          return Object.fromEntries(Object.entries(exp).filter(([_, v]) => v !== undefined && v !== ""));
+        })() as any,
+        screenshotEnabled: getBoolean("screenshotEnabled"),
+        includeInPromo: getBoolean("includeInPromo"),
         alertLevel: (String(form.get("alertLevel")) === "FAIL" ? "FAIL" : "WARN") as any,
-        consecutiveFailThreshold: form.get("alertDampen") === "on" ? 2 : undefined,
+        consecutiveFailThreshold: getBoolean("alertDampen") ? 2 : null,
         notes: String(form.get("notes") || "") || undefined,
       },
     });
@@ -69,9 +98,10 @@ export const action = async ({ params, request }: ActionFunctionArgs) => {
 };
 
 export default function ScenarioDetail() {
-  const { scenario, countries, provinces, currency, marketEnabled, variants, profiles } = useLoaderData<typeof loader>();
+  const { scenario, countries, provinces, currency, marketEnabled, variants, profiles, isNew } = useLoaderData<typeof loader>();
   const fetcher = useFetcher();
   const loading = fetcher.state !== 'idle';
+  const navigate = useNavigate();
 
   const [countryCode, setCountryCode] = useState<string>(scenario.countryCode);
   const [name, setName] = useState<string>(scenario.name || '');
@@ -139,6 +169,28 @@ export default function ScenarioDetail() {
     }
   }, [fetcher.data]);
 
+  // Keep local form state in sync with latest loader data after save/navigation
+  useEffect(() => {
+    setCountryCode(String(scenario.countryCode));
+    setName(String(scenario.name || ''));
+    setPostalCode(String(scenario.postalCode ?? ''));
+    setProvinceCode(String(scenario.provinceCode ?? ''));
+    setCity(String(scenario.city ?? ''));
+    setDiscountCode(String(scenario.discountCode ?? ''));
+    setActive(!!scenario.active);
+    setScreenshotEnabled(!!scenario.screenshotEnabled);
+    setIncludeInPromo(!!scenario.includeInPromo);
+    setAlertLevel(String(scenario.alertLevel || 'WARN'));
+    setFreeShip(String((scenario.expectations as any)?.freeShippingThreshold ?? ''));
+    setMinPrice(String((scenario.expectations as any)?.min ?? ''));
+    setMaxPrice(String((scenario.expectations as any)?.max ?? ''));
+    setBoundsTarget(String((scenario.expectations as any)?.boundsTarget || 'CHEAPEST'));
+    setBoundsTitle(String((scenario.expectations as any)?.boundsTitle || ''));
+    setNotes(String(scenario.notes ?? ''));
+    setAlertDampen(!!scenario.consecutiveFailThreshold && scenario.consecutiveFailThreshold >= 2);
+    setDistrict(String((scenario.expectations as any)?.district || ''));
+  }, [scenario]);
+
   useEffect(() => {
     if (lookupProvince && provinceCode) {
       setZipStateMismatch(lookupProvince !== provinceCode);
@@ -163,7 +215,9 @@ export default function ScenarioDetail() {
             <input type="hidden" name="intent" value="save" />
             <BlockStack gap="200">
               <TextField label="Name" name="name" value={name} onChange={setName} autoComplete="off" />
-              <Checkbox label="Active" name="active" checked={active} onChange={(checked) => setActive(!!checked)} />
+              {/* Hidden fallback so unchecked state still submits */}
+              <input type="hidden" name="active" value="0" />
+              <Checkbox label="Active" name="active" value="1" checked={active} onChange={(checked) => setActive(!!checked)} />
               <InlineStack gap="400">
                 <Select label="Country" name="countryCode" options={(Array.isArray(countries) ? (countries as any[]).map((c: any) => ({ label: c.label, value: c.value })) : [])} value={countryCode} onChange={(v) => { setCountryCode(String(v)); setPostalCode(''); setProvinceCode(''); setCity(''); setDistrict(''); setLookupProvince(undefined); setLookupCity(undefined); setZipStateMismatch(false); }} />
                 {(() => {
@@ -218,8 +272,10 @@ export default function ScenarioDetail() {
               </InlineStack>
               <InlineStack gap="400">
                 <TextField label="Discount code" name="discountCode" value={discountCode} onChange={setDiscountCode} autoComplete="off" />
-                <Checkbox label="Screenshot proof" name="screenshotEnabled" checked={!!screenshotEnabled} onChange={(checked) => setScreenshotEnabled(!!checked)} helpText="Takes a shipping-step screenshot; slightly slower, great for support." />
-                <Checkbox label="Run hourly during promo mode" name="includeInPromo" checked={!!includeInPromo} onChange={(checked) => setIncludeInPromo(!!checked)} helpText="When promo mode is on, this scenario runs hourly." />
+                <input type="hidden" name="screenshotEnabled" value="0" />
+                <Checkbox label="Screenshot proof" name="screenshotEnabled" value="1" checked={!!screenshotEnabled} onChange={(checked) => setScreenshotEnabled(!!checked)} helpText="Takes a shipping-step screenshot; slightly slower, great for support." />
+                <input type="hidden" name="includeInPromo" value="0" />
+                <Checkbox label="Run hourly during promo mode" name="includeInPromo" value="1" checked={!!includeInPromo} onChange={(checked) => setIncludeInPromo(!!checked)} helpText="When promo mode is on, this scenario runs hourly." />
               </InlineStack>
               <InlineStack gap="400">
                 <Select
@@ -248,7 +304,8 @@ export default function ScenarioDetail() {
                 ) : null}
               </InlineStack>
               <InlineStack>
-                <Checkbox label="Only alert after 2 consecutive fails" name="alertDampen" checked={alertDampen} onChange={(checked) => setAlertDampen(!!checked)} />
+                <input type="hidden" name="alertDampen" value="0" />
+                <Checkbox label="Only alert after 2 consecutive fails" name="alertDampen" value="1" checked={alertDampen} onChange={(checked) => setAlertDampen(!!checked)} />
               </InlineStack>
               <TextField label="Notes" name="notes" value={notes} onChange={setNotes} autoComplete="off" multiline={3} />
               <InlineStack gap="400">
@@ -301,11 +358,22 @@ export default function ScenarioDetail() {
             </BlockStack>
           ) : null}
           <InlineStack>
-            <Button url={`/app/scenarios/${scenario.id}/items`}>
+            <Button onClick={() => navigate(`/app/scenarios/${scenario.id}/items`)}>
               Edit items
             </Button>
           </InlineStack>
         </Card>
+        {!isNew ? (
+        <Card>
+          <BlockStack gap="200">
+            <Text as="h3" variant="headingMd">Danger zone</Text>
+            <Form method="post" onSubmit={(e) => { if (!confirm('Delete this scenario? This cannot be undone.')) { e.preventDefault(); } }}>
+              <input type="hidden" name="intent" value="delete" />
+              <Button tone="critical" submit>Delete scenario</Button>
+            </Form>
+          </BlockStack>
+        </Card>
+        ) : null}
       </BlockStack>
     </Page>
   );

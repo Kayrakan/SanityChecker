@@ -35,7 +35,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         quantities: [],
       },
     });
-    return redirect(`/app/scenarios/${scenario.id}`);
+    return redirect(`/app/scenarios/${scenario.id}?new=1`);
   }
   if (intent === "run") {
     const scenarioId = String(form.get("scenarioId"));
