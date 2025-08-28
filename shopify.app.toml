@@ -3,7 +3,7 @@
 client_id = "c332e04b7bba61ec0b2e8d83612aac16"
 name = "SanityChecker"
 handle = "sanitychecker"
-application_url = "https://javascript-seconds-buddy-presentation.trycloudflare.com"
+application_url = "https://ordered-contract-gadgets-see.trycloudflare.com"
 embedded = true
 
 [access_scopes]
@@ -38,7 +38,7 @@ api_version = "2025-07"
   uri = "/webhooks/discounts.update"
 
 [auth]
-redirect_urls = ["https://javascript-seconds-buddy-presentation.trycloudflare.com/auth/callback", "https://javascript-seconds-buddy-presentation.trycloudflare.com/auth/shopify/callback", "https://javascript-seconds-buddy-presentation.trycloudflare.com/api/auth/callback"]
+redirect_urls = ["https://ordered-contract-gadgets-see.trycloudflare.com/auth/callback", "https://ordered-contract-gadgets-see.trycloudflare.com/auth/shopify/callback", "https://ordered-contract-gadgets-see.trycloudflare.com/api/auth/callback"]
 
 [pos]
 embedded = false

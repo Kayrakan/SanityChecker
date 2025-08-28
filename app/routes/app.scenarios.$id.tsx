@@ -1,8 +1,8 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { json, redirect } from "@remix-run/node";
-import { Form, useLoaderData, useFetcher } from "@remix-run/react";
+import { Form, useLoaderData, useFetcher, Outlet, useLocation } from "@remix-run/react";
 import { useNavigate } from "@remix-run/react";
-import { Page, Card, TextField, Button, BlockStack, InlineStack, Checkbox, Text, Select, InlineError } from "@shopify/polaris";
+import { Page, Card, TextField, Button, BlockStack, InlineStack, Checkbox, Text, Select, InlineError, Modal } from "@shopify/polaris";
 import { useEffect, useMemo, useState } from "react";
 import { authenticate } from "../shopify.server";
 import { listShopifyCountries, listShopifyProvinces } from "../services/countries.server";
@@ -102,6 +102,9 @@ export default function ScenarioDetail() {
   const fetcher = useFetcher();
   const loading = fetcher.state !== 'idle';
   const navigate = useNavigate();
+  const location = useLocation();
+  const editingItems = location.pathname.endsWith('/items');
+  const showModal = editingItems && new URLSearchParams(location.search).get('modal') === '1';
 
   const [countryCode, setCountryCode] = useState<string>(scenario.countryCode);
   const [name, setName] = useState<string>(scenario.name || '');
@@ -209,6 +212,20 @@ export default function ScenarioDetail() {
   }, [variants, scenario.productVariantIds, scenario.quantities]);
   return (
     <Page title="Scenario">
+      {showModal ? (
+        <Modal
+          open
+          onClose={() => navigate(`/app/scenarios/${scenario.id}`)}
+          title="Edit items"
+          size="large"
+        >
+          <Modal.Section>
+            <Outlet />
+          </Modal.Section>
+        </Modal>
+      ) : editingItems ? (
+        <Outlet />
+      ) : (
       <BlockStack gap="400">
         <Card>
           <Form method="post">
@@ -358,7 +375,7 @@ export default function ScenarioDetail() {
             </BlockStack>
           ) : null}
           <InlineStack>
-            <Button onClick={() => navigate(`/app/scenarios/${scenario.id}/items`)}>
+            <Button onClick={() => navigate(`/app/scenarios/${scenario.id}/items?modal=1`)}>
               Edit items
             </Button>
           </InlineStack>
@@ -375,6 +392,7 @@ export default function ScenarioDetail() {
         </Card>
         ) : null}
       </BlockStack>
+      )}
     </Page>
   );
 }
