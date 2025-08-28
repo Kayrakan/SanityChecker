@@ -101,6 +101,17 @@ export default function ScenarioItems() {
 
   const pageSize = 25;
 
+  async function readJsonSafe(res: Response): Promise<any> {
+    const text = await res.text();
+    try {
+      return JSON.parse(text);
+    } catch {
+      // Normalize non-JSON responses (e.g., text errors) into a friendly error
+      const snippet = String(text || '').slice(0, 200);
+      throw new Error(snippet || 'Unexpected response');
+    }
+  }
+
   const queryParams = useMemo(() => {
     const params = new URLSearchParams();
     if (debouncedTerm) params.set("term", debouncedTerm);
@@ -127,7 +138,7 @@ export default function ScenarioItems() {
       if (cursor) params.set("cursor", cursor);
       url.search = params.toString();
       const res = await fetch(url.toString());
-      const data = await res.json();
+      const data = await readJsonSafe(res);
       if (!res.ok) throw new Error(data?.error || "We couldn’t reach Shopify right now—retry in a moment.");
       const items: Row[] = data.items || [];
       setRows(items);
@@ -156,10 +167,13 @@ export default function ScenarioItems() {
     (async () => {
       try {
         const res = await fetch("/internal/facets?limit=200");
-        const data = await res.json();
+        const data = await readJsonSafe(res);
         if (Array.isArray(data?.vendors)) setVendorOptions(data.vendors);
         if (Array.isArray(data?.productTypes)) setProductTypeOptions(data.productTypes);
-      } catch {}
+      } catch (e:any) {
+        // Silently ignore; facets are optional
+        console.warn('facets fetch failed', e?.message);
+      }
     })();
   }, []);
 
@@ -171,10 +185,12 @@ export default function ScenarioItems() {
         if (debouncedCollectionQuery) url.searchParams.set("q", debouncedCollectionQuery);
         url.searchParams.set("limit", "20");
         const res = await fetch(url.toString());
-        const data = await res.json();
+        const data = await readJsonSafe(res);
         const options = Array.isArray(data?.options) ? data.options : [];
         setCollectionOptions(options);
-      } catch {}
+      } catch (e:any) {
+        console.warn('collections fetch failed', e?.message);
+      }
     })();
   }, [debouncedCollectionQuery]);
 
@@ -216,7 +232,8 @@ export default function ScenarioItems() {
     if (ids.length === 0) { setProfileNames({}); return; }
     const params = new URLSearchParams();
     ids.forEach(id => params.append("id", id));
-    fetch(`/internal/variant-profiles?${params.toString()}`).then(r => r.json()).then(d => {
+    fetch(`/internal/variant-profiles?${params.toString()}`).then(async (r) => {
+      const d = await readJsonSafe(r);
       setProfileNames(d?.profiles || {});
     }).catch(() => {});
   }, [JSON.stringify(selected.map(s => s.id).sort())]);

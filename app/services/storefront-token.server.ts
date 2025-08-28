@@ -1,7 +1,7 @@
 import prisma from "../db.server";
 import { getAdminClientByShop } from "./shopify-clients.server";
 
-const DEFAULT_STOREFRONT_VERSION = "2025-01";
+const DEFAULT_STOREFRONT_VERSION = "2025-07";
 
 async function listTokens(admin: any) {
   const res = await admin.graphql(

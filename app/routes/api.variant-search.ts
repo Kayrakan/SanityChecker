@@ -2,6 +2,7 @@ import type { LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
 import { authenticate } from "../shopify.server";
 import { adminGraphqlJson, getAdminClientByShop } from "../services/shopify-clients.server";
+import { fetchVariantInfos } from "../services/variants.server";
 
 // Simple in-memory cache for 60s
 const CACHE_TTL_MS = 60_000;
@@ -44,11 +45,15 @@ function gramsFrom(weight: number | null | undefined, unit: string | null | unde
 
 function normalizeVariant(node: any, product: any) {
   const levels = node?.inventoryItem?.inventoryLevels?.edges ?? [];
-  const inventory = levels.reduce((sum: number, e: any) => sum + (Number(e?.node?.available ?? 0) || 0), 0);
-  const grams = gramsFrom(node?.weight, node?.weightUnit);
+  const inventoryQty = levels.reduce((sum: number, e: any) => {
+    const qs = e?.node?.quantities ?? [];
+    const available = Array.isArray(qs)
+      ? qs.find((q: any) => String(q?.name || '').toUpperCase() === 'AVAILABLE')
+      : undefined;
+    const qty = Number(available?.quantity ?? 0) || 0;
+    return sum + qty;
+  }, 0);
   const imageUrl = node?.image?.url || product?.featuredImage?.url || null;
-  const price = node?.price ? Number(node.price) : undefined;
-  const currencyCode = product?.presentmentCurrencyCode || undefined; // Not always available; best effort
   return {
     id: node?.id,
     productId: product?.id,
@@ -56,12 +61,12 @@ function normalizeVariant(node: any, product: any) {
     variantTitle: node?.title,
     sku: node?.sku || "",
     imageUrl,
-    price,
-    currencyCode,
-    grams,
-    weightKg: grams / 1000,
-    requiresShipping: !!node?.requiresShipping,
-    inventory,
+    price: undefined as number | undefined,
+    currencyCode: undefined as string | undefined,
+    grams: 0,
+    weightKg: 0,
+    requiresShipping: true,
+    inventory: inventoryQty,
     vendor: product?.vendor || "",
     productType: product?.productType || "",
   };
@@ -110,14 +115,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const { admin } = await getAdminClientByShop(session.shop);
 
-  const items: any[] = [];
+  const rawItems: any[] = [];
   let hasNextPage = false;
   let endCursor: string | null = null;
 
   const sortKey = ["TITLE","SKU"].includes(sort) ? sort : "TITLE";
   const reverse = direction === "DESC";
 
-  // Helper to apply post-filters
+  // Helper to apply post-filters (after enrichment)
   function passesFilters(v: any): boolean {
     if (requiresShipping !== undefined && !!v.requiresShipping !== requiresShipping) return false;
     if (inStock !== undefined) {
@@ -138,58 +143,85 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   let safety = 5;
   let nextAfter: string | undefined = after;
 
-  while (items.length < pageSize && safety-- > 0) {
-    if (useProductFirst) {
-      const qParts = ["status:active"] as string[];
-      if (collectionId) qParts.push(`collection_id:${JSON.stringify(collectionId)}`);
-      if (vendor) qParts.push(`vendor:${JSON.stringify(vendor)}`);
-      if (productType) qParts.push(`product_type:${JSON.stringify(productType)}`);
-      if (term) qParts.push(`title:*${term.replace(/\"/g, '\\"')}*`);
-      const query = qParts.join(" ");
-      const data = await adminGraphqlJson<any>(admin, `#graphql\nquery Products($first:Int!,$after:String,$query:String!){\n  products(first:$first,after:$after,query:$query,sortKey:TITLE){\n    edges{ cursor node{ id title vendor productType status featuredImage{url} variants(first:50){ edges{ node{ id title sku requiresShipping weight weightUnit price image{url} inventoryItem{ inventoryLevels(first:10){ edges{ node{ available } } } } } } } } }\n    pageInfo{ hasNextPage endCursor }\n  }\n}`, { first: 50, after: nextAfter, query });
-      const edges = data?.data?.products?.edges || [];
-      for (const e of edges) {
-        const p = e?.node;
-        if (!p || p?.status !== "ACTIVE") continue;
-        const vEdges = p?.variants?.edges || [];
-        for (const ve of vEdges) {
-          const v = ve?.node;
-          if (!v) continue;
-          const row = normalizeVariant(v, p);
-          if (passesFilters(row)) items.push(row);
-          if (items.length >= pageSize) break;
+  try {
+    while (rawItems.length < pageSize && safety-- > 0) {
+      if (useProductFirst) {
+        const qParts = ["status:active"] as string[];
+        if (collectionId) qParts.push(`collection_id:${JSON.stringify(collectionId)}`);
+        if (vendor) qParts.push(`vendor:${JSON.stringify(vendor)}`);
+        if (productType) qParts.push(`product_type:${JSON.stringify(productType)}`);
+        if (term) qParts.push(`title:*${term.replace(/\"/g, '\\"')}*`);
+        const query = qParts.join(" ");
+        const data = await adminGraphqlJson<any>(admin, `#graphql\nquery Products($first:Int!,$after:String,$query:String!){\n  products(first:$first,after:$after,query:$query,sortKey:TITLE){\n    edges{ cursor node{ id title vendor productType status featuredImage{url} variants(first:50){ edges{ node{ id title sku image{url} inventoryItem{ inventoryLevels(first:10){ edges{ node{ quantities(names: [\"available\"]) { name quantity } } } } } } } } } }\n    pageInfo{ hasNextPage endCursor }\n  }\n}`, { first: 50, after: nextAfter, query });
+        const edges = data?.data?.products?.edges || [];
+        for (const e of edges) {
+          const p = e?.node;
+          if (!p || p?.status !== "ACTIVE") continue;
+          const vEdges = p?.variants?.edges || [];
+          for (const ve of vEdges) {
+            const v = ve?.node;
+            if (!v) continue;
+            const row = normalizeVariant(v, p);
+            rawItems.push(row);
+            if (rawItems.length >= pageSize) break;
+          }
+          if (rawItems.length >= pageSize) break;
         }
-        if (items.length >= pageSize) break;
+        hasNextPage = !!data?.data?.products?.pageInfo?.hasNextPage;
+        endCursor = data?.data?.products?.pageInfo?.endCursor ?? null;
+        nextAfter = endCursor ?? undefined;
+        if (!hasNextPage) break;
+      } else {
+        const query = buildVariantQueryString({ term, vendor, productType });
+        const data = await adminGraphqlJson<any>(admin, `#graphql\nquery Variants($first:Int!,$after:String,$query:String!,$sortKey:ProductVariantSortKeys,$reverse:Boolean){\n  productVariants(first:$first,after:$after,query:$query,sortKey:$sortKey,reverse:$reverse){\n    edges{ cursor node{ id title sku image{url} product{ id title vendor productType status featuredImage{url} } inventoryItem{ inventoryLevels(first:10){ edges{ node{ quantities(names: [\"available\"]) { name quantity } } } } } } }\n    pageInfo{ hasNextPage endCursor }\n  }\n}`, { first: 50, after: nextAfter, query, sortKey, reverse });
+        const edges = data?.data?.productVariants?.edges || [];
+        for (const e of edges) {
+          const v = e?.node;
+          if (!v) continue;
+          const p = v?.product;
+          if (!p || p?.status !== "ACTIVE") continue;
+          const row = normalizeVariant(v, p);
+          rawItems.push(row);
+          if (rawItems.length >= pageSize) break;
+        }
+        hasNextPage = !!data?.data?.productVariants?.pageInfo?.hasNextPage;
+        endCursor = data?.data?.productVariants?.pageInfo?.endCursor ?? null;
+        nextAfter = endCursor ?? undefined;
+        if (!hasNextPage) break;
       }
-      hasNextPage = !!data?.data?.products?.pageInfo?.hasNextPage;
-      endCursor = data?.data?.products?.pageInfo?.endCursor ?? null;
-      nextAfter = endCursor ?? undefined;
-      if (!hasNextPage) break;
-    } else {
-      const query = buildVariantQueryString({ term, vendor, productType });
-      const data = await adminGraphqlJson<any>(admin, `#graphql\nquery Variants($first:Int!,$after:String,$query:String!,$sortKey:ProductVariantSortKeys,$reverse:Boolean){\n  productVariants(first:$first,after:$after,query:$query,sortKey:$sortKey,reverse:$reverse){\n    edges{ cursor node{ id title sku requiresShipping weight weightUnit price image{url} product{ id title vendor productType status featuredImage{url} } inventoryItem{ inventoryLevels(first:10){ edges{ node{ available } } } } } }\n    pageInfo{ hasNextPage endCursor }\n  }\n}`, { first: 50, after: nextAfter, query, sortKey, reverse });
-      const edges = data?.data?.productVariants?.edges || [];
-      for (const e of edges) {
-        const v = e?.node;
-        if (!v) continue;
-        const p = v?.product;
-        if (!p || p?.status !== "ACTIVE") continue;
-        const row = normalizeVariant(v, p);
-        if (passesFilters(row)) items.push(row);
-        if (items.length >= pageSize) break;
+      if (rawItems.length < pageSize && hasNextPage) {
+        // Gentle rate limiting ~1.5 req/s
+        await new Promise((r) => setTimeout(r, 650));
       }
-      hasNextPage = !!data?.data?.productVariants?.pageInfo?.hasNextPage;
-      endCursor = data?.data?.productVariants?.pageInfo?.endCursor ?? null;
-      nextAfter = endCursor ?? undefined;
-      if (!hasNextPage) break;
     }
-    if (items.length < pageSize && hasNextPage) {
-      // Gentle rate limiting ~1.5 req/s
-      await new Promise((r) => setTimeout(r, 650));
-    }
+  } catch (err: any) {
+    const message = String(err?.message || "We couldn’t reach Shopify right now—retry in a moment.");
+    return bad(message, 502);
   }
 
-  // If sorting by weight/price globally isn't supported, we can post-sort within this page only
+  // Enrich via Storefront API for price/weight/requiresShipping
+  try {
+    if (rawItems.length > 0) {
+      const infos = await fetchVariantInfos(session.shop, rawItems.map(r => r.id));
+      const map = new Map(infos.map(i => [i.id, i]));
+      for (const r of rawItems) {
+        const i = map.get(r.id);
+        if (i) {
+          r.grams = i.grams ?? 0;
+          r.weightKg = (r.grams || 0) / 1000;
+          r.requiresShipping = !!i.requiresShipping;
+          r.price = i.priceAmount;
+          r.currencyCode = i.priceCurrency;
+          if (i.productTitle) r.productTitle = i.productTitle;
+        }
+      }
+    }
+  } catch {}
+
+  // Apply filters that rely on enrichment
+  let items = rawItems.filter(passesFilters);
+
+  // Post-sort within page for PRICE/WEIGHT
   if (sort === "PRICE") {
     items.sort((a, b) => (a.price ?? 0) - (b.price ?? 0));
     if (reverse) items.reverse();
@@ -198,7 +230,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     if (reverse) items.reverse();
   }
 
-  const payload = { items, pageInfo: { hasNextPage, endCursor }, sort, direction };
+  const payload = { items: items.slice(0, pageSize), pageInfo: { hasNextPage: hasNextPage || items.length > pageSize, endCursor }, sort, direction };
   lastKey = cacheKey; lastValue = payload; lastTs = Date.now();
   return ok(payload);
 };
