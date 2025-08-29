@@ -3,7 +3,7 @@
 client_id = "c332e04b7bba61ec0b2e8d83612aac16"
 name = "SanityChecker"
 handle = "sanitychecker"
-application_url = "https://chess-feed-studio-france.trycloudflare.com"
+application_url = "https://connecticut-garcia-circle-corp.trycloudflare.com"
 embedded = true
 
 [access_scopes]
@@ -38,7 +38,7 @@ api_version = "2025-07"
   uri = "/webhooks/discounts.update"
 
 [auth]
-redirect_urls = ["https://chess-feed-studio-france.trycloudflare.com/auth/callback", "https://chess-feed-studio-france.trycloudflare.com/auth/shopify/callback", "https://chess-feed-studio-france.trycloudflare.com/api/auth/callback"]
+redirect_urls = ["https://connecticut-garcia-circle-corp.trycloudflare.com/auth/callback", "https://connecticut-garcia-circle-corp.trycloudflare.com/auth/shopify/callback", "https://connecticut-garcia-circle-corp.trycloudflare.com/api/auth/callback"]
 
 [pos]
 embedded = false

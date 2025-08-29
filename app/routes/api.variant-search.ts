@@ -104,6 +104,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   let after = url.searchParams.get("cursor") || undefined;
 
   const restrictive = !!collectionId || !!vendor || !!productType;
+  console.log(`[variant-search] term="${term}", restrictive=${restrictive}, collectionId="${collectionId}", vendor="${vendor}", productType="${productType}"`);
+  
   if (term.length > 0 && term.length < 2 && !restrictive) {
     return bad("Type at least 2 characters or choose a Collection to search.", 400);
   }
@@ -136,13 +138,20 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     return true;
   }
 
-  // Decide query shape
+  // Decide query shape - use product query only when we have collection or vendor/type filters without search term
   const useProductFirst = !!collectionId || (!term && (vendor || productType));
+  console.log(`[variant-search] useProductFirst=${useProductFirst}, term="${term}"`);
+  
+  // If no filters at all, show initial results
+  if (!term && !collectionId && !vendor && !productType) {
+    console.log(`[variant-search] No filters - showing initial results`);
+  }
 
   // We'll fetch up to 5 pages to fill requested page, respecting rate limits implicitly via retry
   let safety = 5;
   let nextAfter: string | undefined = after;
 
+  let filledWithinBatch = false;
   try {
     while (rawItems.length < pageSize && safety-- > 0) {
       if (useProductFirst) {
@@ -152,6 +161,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         if (productType) qParts.push(`product_type:${JSON.stringify(productType)}`);
         if (term) qParts.push(`title:*${term.replace(/\"/g, '\\"')}*`);
         const query = qParts.join(" ");
+        console.log(`[variant-search] Product query: "${query}"`);
         const data = await adminGraphqlJson<any>(admin, `#graphql\nquery Products($first:Int!,$after:String,$query:String!){\n  products(first:$first,after:$after,query:$query,sortKey:TITLE){\n    edges{ cursor node{ id title vendor productType status featuredImage{url} variants(first:50){ edges{ node{ id title sku image{url} inventoryItem{ inventoryLevels(first:10){ edges{ node{ quantities(names: [\"available\"]) { name quantity } } } } } } } } } }\n    pageInfo{ hasNextPage endCursor }\n  }\n}`, { first: 50, after: nextAfter, query });
         const edges = data?.data?.products?.edges || [];
         for (const e of edges) {
@@ -163,7 +173,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
             if (!v) continue;
             const row = normalizeVariant(v, p);
             rawItems.push(row);
-            if (rawItems.length >= pageSize) break;
+            if (rawItems.length >= pageSize) { filledWithinBatch = true; break; }
           }
           if (rawItems.length >= pageSize) break;
         }
@@ -173,6 +183,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         if (!hasNextPage) break;
       } else {
         const query = buildVariantQueryString({ term, vendor, productType });
+        console.log(`[variant-search] Variant query: "${query}"`);
         const data = await adminGraphqlJson<any>(admin, `#graphql\nquery Variants($first:Int!,$after:String,$query:String!,$sortKey:ProductVariantSortKeys,$reverse:Boolean){\n  productVariants(first:$first,after:$after,query:$query,sortKey:$sortKey,reverse:$reverse){\n    edges{ cursor node{ id title sku image{url} product{ id title vendor productType status featuredImage{url} } inventoryItem{ inventoryLevels(first:10){ edges{ node{ quantities(names: [\"available\"]) { name quantity } } } } } } }\n    pageInfo{ hasNextPage endCursor }\n  }\n}`, { first: 50, after: nextAfter, query, sortKey, reverse });
         const edges = data?.data?.productVariants?.edges || [];
         for (const e of edges) {
@@ -182,7 +193,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           if (!p || p?.status !== "ACTIVE") continue;
           const row = normalizeVariant(v, p);
           rawItems.push(row);
-          if (rawItems.length >= pageSize) break;
+          if (rawItems.length >= pageSize) { filledWithinBatch = true; break; }
         }
         hasNextPage = !!data?.data?.productVariants?.pageInfo?.hasNextPage;
         endCursor = data?.data?.productVariants?.pageInfo?.endCursor ?? null;
@@ -230,7 +241,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     if (reverse) items.reverse();
   }
 
-  const payload = { items: items.slice(0, pageSize), pageInfo: { hasNextPage: hasNextPage || items.length > pageSize, endCursor }, sort, direction };
+  const payload = { items: items.slice(0, pageSize), pageInfo: { hasNextPage: (hasNextPage || filledWithinBatch || items.length > pageSize), endCursor }, sort, direction };
+  console.log(`[variant-search] Returning ${payload.items.length} items, hasNextPage=${payload.pageInfo.hasNextPage}`);
   lastKey = cacheKey; lastValue = payload; lastTs = Date.now();
   return ok(payload);
 };
