@@ -1,5 +1,6 @@
 import shopify, { authenticate, sessionStorage, apiVersion } from "../shopify.server";
 import prisma from "../db.server";
+import { consume as rlConsume } from "./rate-limit.server";
 
 export async function requestWithRetry(url: string, init: RequestInit, attempts = 3, backoffMs = 200): Promise<Response> {
   let lastErr: any;
@@ -29,6 +30,8 @@ export async function unauthenticatedStorefrontClient(shop: string, storefrontAc
   const endpoint = `https://${shop}/api/${apiVersion ?? "2025-01"}/graphql.json`;
   return {
     async graphql(query: string, variables?: Record<string, any>) {
+      // Basic per-shop rate limiting for Storefront
+      try { await rlConsume("storefront", shop); } catch {}
       const res = await requestWithRetry(endpoint, {
         method: "POST",
         headers: {
@@ -57,6 +60,7 @@ export async function getAdminClientByShop(shopDomain: string) {
   const endpoint = `https://${shopDomain}/admin/api/${version}/graphql.json`;
   const admin = {
     async graphql(query: string, variables?: Record<string, any>) {
+      try { await rlConsume("admin", shopDomain); } catch {}
       const res = await requestWithRetry(endpoint, {
         method: "POST",
         headers: {

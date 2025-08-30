@@ -67,7 +67,7 @@ function buildDiagnostics(groups: any[], options: DeliveryOption[] | null, subto
   return diags;
 }
 
-export async function runScenarioById(scenarioId: string) {
+export async function runScenarioById(scenarioId: string, runId?: string) {
   const db: any = prisma;
   const scenario = await db.scenario.findUnique({ where: { id: scenarioId }, include: { shop: { include: { settings: true } } } });
   if (!scenario) throw new Error("Scenario not found");
@@ -82,7 +82,11 @@ export async function runScenarioById(scenarioId: string) {
     quantity: scenario.quantities[idx] ?? 1,
   }));
 
-  const run = await createRun(scenario.id, shop.id);
+  // Use provided runId when present (idempotent). Otherwise create a new Run.
+  let run = runId ? await db.run.findUnique({ where: { id: runId } }) : null;
+  if (!run) {
+    run = await createRun(scenario.id, shop.id);
+  }
 
   try {
     const cartCreateRes = await client.graphql(
@@ -259,5 +263,4 @@ export async function runScenarioById(scenarioId: string) {
     return await db.run.findUnique({ where: { id: run.id } });
   }
 }
-
 

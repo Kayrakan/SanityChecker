@@ -16,7 +16,10 @@
     "shopify": "shopify",
     "prisma": "prisma",
     "graphql-codegen": "graphql-codegen",
-    "vite": "vite"
+    "vite": "vite",
+    "worker": "tsx worker/bull.worker.ts",
+    "redis:up": "docker compose up -d redis",
+    "redis:down": "docker compose down"
   },
   "type": "module",
   "engines": {
@@ -33,6 +36,8 @@
     "@shopify/polaris": "^12.0.0",
     "@shopify/shopify-app-remix": "^3.7.0",
     "@shopify/shopify-app-session-storage-prisma": "^6.0.0",
+    "bullmq": "^5.58.4",
+    "ioredis": "^5.7.0",
     "isbot": "^5.1.0",
     "prisma": "^6.2.1",
     "react": "^18.2.0",
@@ -40,6 +45,8 @@
     "vite-tsconfig-paths": "^5.0.1"
   },
   "devDependencies": {
+    "@bull-board/api": "^6.12.7",
+    "@bull-board/express": "^6.12.7",
     "@remix-run/eslint-config": "^2.16.1",
     "@remix-run/route-config": "^2.16.1",
     "@shopify/api-codegen-preset": "^1.1.1",
@@ -47,9 +54,12 @@
     "@types/node": "^22.2.0",
     "@types/react": "^18.2.31",
     "@types/react-dom": "^18.2.14",
+    "bull-board": "^1.7.2",
     "eslint": "^8.42.0",
     "eslint-config-prettier": "^10.0.1",
+    "express": "^5.1.0",
     "prettier": "^3.2.4",
+    "tsx": "^4.20.5",
     "typescript": "^5.2.2",
     "vite": "^6.2.2"
   },

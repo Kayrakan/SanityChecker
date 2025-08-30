@@ -83,8 +83,13 @@ export default function ScenarioItems() {
   const [direction, setDirection] = useState<"ASC" | "DESC">("ASC");
 
   const debouncedTerm = useDebounced(term, 350);
-  const [collectionOptions, setCollectionOptions] = useState<{ value: string; label: string }[]>([]);
+  const [collectionOptions, setCollectionOptions] = useState<{ value: string; label: string }[]>([
+    { value: "", label: "Any" },
+  ]);
   const [collectionQuery, setCollectionQuery] = useState("");
+  const [collectionLabel, setCollectionLabel] = useState("");
+  const [collectionFocused, setCollectionFocused] = useState(false);
+  const skipNextCollectionsFetch = useRef(false);
   const [collectionSelected, setCollectionSelected] = useState<string[]>([]);
   const [vendorOptions, setVendorOptions] = useState<string[]>([]);
   const [productTypeOptions, setProductTypeOptions] = useState<string[]>([]);
@@ -184,10 +189,11 @@ export default function ScenarioItems() {
         const url = new URL("/internal/collections", window.location.origin);
         if (debouncedCollectionQuery) url.searchParams.set("q", debouncedCollectionQuery);
         url.searchParams.set("limit", "20");
+        if (skipNextCollectionsFetch.current) { skipNextCollectionsFetch.current = false; return; }
         const res = await fetch(url.toString());
         const data = await readJsonSafe(res);
         const options = Array.isArray(data?.options) ? data.options : [];
-        setCollectionOptions(options);
+        setCollectionOptions([{ value: "", label: "Any" }, ...options]);
       } catch (e:any) {
         console.warn('collections fetch failed', e?.message);
       }
@@ -196,6 +202,10 @@ export default function ScenarioItems() {
 
   // Keep Autocomplete selection in sync with filter value
   useEffect(() => { setCollectionSelected(collectionId ? [collectionId] : []); }, [collectionId]);
+  useEffect(() => {
+    const label = collectionOptions.find(o => o.value === collectionId)?.label || "";
+    setCollectionLabel(label);
+  }, [collectionId, collectionOptions]);
 
   // Selection state
   const [selected, setSelected] = useState<{ id: string; row: Row; qty: number }[]>(() => {
@@ -265,13 +275,27 @@ export default function ScenarioItems() {
                   const id = (sel as string[])[0] || "";
                   setCollectionId(id);
                   const label = collectionOptions.find(o => o.value === id)?.label || "";
+                  setCollectionLabel(label);
+                  // Show the selected label immediately in the field, without triggering a refetch
+                  skipNextCollectionsFetch.current = true;
                   setCollectionQuery(label);
                 }}
                 textField={
                   <Autocomplete.TextField
                     label="Collection"
-                    value={collectionQuery}
-                    onChange={setCollectionQuery}
+                    value={collectionFocused ? collectionQuery : (collectionLabel || collectionQuery)}
+                    onChange={(v) => {
+                      setCollectionQuery(v);
+                    }}
+                    onFocus={() => { setCollectionFocused(true); /* keep current value to avoid immediate fetch */ }}
+                    onBlur={() => { setCollectionFocused(false); }}
+                    clearButton
+                    onClearButtonClick={() => {
+                      setCollectionId("");
+                      setCollectionSelected([]);
+                      setCollectionQuery("");
+                      setCollectionLabel("");
+                    }}
                     autoComplete="off"
                     placeholder="Search collections…"
                   />
@@ -474,5 +498,3 @@ export default function ScenarioItems() {
     </Page>
   );
 }
-
-

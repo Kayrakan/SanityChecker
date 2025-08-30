@@ -1,10 +1,10 @@
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
-import { useLoaderData } from "@remix-run/react";
+import { Link as RemixLink, useLoaderData } from "@remix-run/react";
 import { Page, Card, Text, Box, Button, BlockStack, InlineStack, Badge } from "@shopify/polaris";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
-import { enqueueScenarioRun } from "../models/job.server";
+import { enqueueScenarioRunBull } from "../services/queue-bull.server";
 
 export const loader = async ({ params, request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -19,7 +19,7 @@ export const action = async ({ params, request }: ActionFunctionArgs) => {
   const db: any = prisma;
   const run = await db.run.findUnique({ where: { id: String(params.id) }, include: { scenario: true, shop: true } });
   if (!run) throw new Response("Not Found", { status: 404 });
-  await enqueueScenarioRun(run.shopId, run.scenarioId);
+  await enqueueScenarioRunBull(run.shopId, run.scenarioId);
   return json({ ok: true });
 };
 
@@ -47,8 +47,17 @@ export default function RunDetail() {
             <Text as="h3" variant="headingMd">Status</Text>
             <Badge tone={run.status === 'PASS' ? 'success' : run.status === 'WARN' ? 'attention' : run.status === 'FAIL' || run.status === 'ERROR' ? 'critical' : 'new'}>{run.status}</Badge>
           </InlineStack>
-          <Text as="p" variant="bodyMd">Started: {new Date(run.startedAt).toLocaleString()}</Text>
-          {run.finishedAt && (<Text as="p" variant="bodyMd">Finished: {new Date(run.finishedAt).toLocaleString()}</Text>)}
+          <InlineStack align="space-between">
+            <Text as="p" variant="bodyMd">
+              Started: {new Date(run.startedAt).toLocaleString()} {run.finishedAt ? `• Finished: ${new Date(run.finishedAt).toLocaleString()}` : ''}
+            </Text>
+            <Text as="p" variant="bodyMd">
+              Duration: {run.finishedAt ? Math.max(0, new Date(run.finishedAt).getTime() - new Date(run.startedAt).getTime()) + ' ms' : '—'}
+            </Text>
+          </InlineStack>
+          <Text as="p" variant="bodyMd">
+            Scenario: <RemixLink to={`/app/scenarios/${run.scenarioId}`}>{run.scenario?.name ?? 'Scenario'}</RemixLink>
+          </Text>
         </Card>
         <Card>
           <Text as="h3" variant="headingMd">What we saw</Text>
@@ -75,5 +84,4 @@ export default function RunDetail() {
     </Page>
   );
 }
-
 

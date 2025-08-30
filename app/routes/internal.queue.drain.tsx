@@ -3,7 +3,6 @@ import { json } from "@remix-run/node";
 import prisma from "../db.server";
 import { claimNextJob, finishJob } from "../models/job.server";
 import { runScenarioById } from "../services/runner.server";
-import prisma from "../db.server";
 import { formatDigestText, sendEmailViaResend, sendSlack } from "../services/notifications.server";
 
 async function processJob(job: any) {

@@ -4,7 +4,7 @@ import { useLoaderData, useFetcher, Link as RemixLink, Form } from "@remix-run/r
 import { Page, Card, Button, IndexTable, Text, BlockStack, InlineStack, Badge } from "@shopify/polaris";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
-import { enqueueScenarioRun } from "../models/job.server";
+import { enqueueScenarioRunBull } from "../services/queue-bull.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   console.log("loader running");
@@ -45,7 +45,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       create: { domain: session.shop, settings: { create: {} } },
       update: {},
     });
-    await enqueueScenarioRun(shop.id, scenarioId);
+    await enqueueScenarioRunBull(shop.id, scenarioId);
     return json({ ok: true });
   }
   return json({ ok: true });
@@ -105,5 +105,4 @@ function RunScenarioButton({ scenarioId }: { scenarioId: string }) {
     </fetcher.Form>
   );
 }
-
 

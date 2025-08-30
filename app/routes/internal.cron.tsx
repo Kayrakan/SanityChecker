@@ -1,7 +1,8 @@
 import type { LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
 import prisma from "../db.server";
-import { enqueueScenarioRun, enqueueDigestEmail } from "../models/job.server";
+import { enqueueDigestEmailBull } from "../services/queue-bull.server";
+import { enqueueScenarioRunBull } from "../services/queue-bull.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const url = new URL(request.url);
@@ -22,15 +23,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     for (const s of shop.scenarios) {
       if (!s.active) continue;
       if (settings.promoMode && !s.includeInPromo) continue;
-      await enqueueScenarioRun(shop.id, s.id);
+      await enqueueScenarioRunBull(shop.id, s.id);
     }
     // Delay digest by 15 minutes to allow runs to complete
     const fifteen = new Date(Date.now() + 15 * 60 * 1000);
-    await enqueueDigestEmail(shop.id);
-    await prisma.job.updateMany({ where: { shopId: shop.id, type: "DIGEST_EMAIL", status: "QUEUED" as any }, data: { availableAt: fifteen } });
+    await enqueueDigestEmailBull(shop.id, { delay: Math.max(0, fifteen.getTime() - Date.now()) });
   }
 
   return json({ ok: true });
 };
-
 

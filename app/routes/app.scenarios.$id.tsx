@@ -88,8 +88,8 @@ export const action = async ({ params, request }: ActionFunctionArgs) => {
       // enqueue immediate run
       const shop = await prisma.shop.findFirst({ where: { id: (await prisma.scenario.findUnique({ where: { id } }))!.shopId } });
       if (shop) {
-        const { enqueueScenarioRun } = await import("../models/job.server");
-        await enqueueScenarioRun(shop.id, id);
+        const { enqueueScenarioRunBull } = await import("../services/queue-bull.server");
+        await enqueueScenarioRunBull(shop.id, id);
       }
     }
     return redirect(`/app/scenarios/${id}`);
@@ -396,5 +396,4 @@ export default function ScenarioDetail() {
     </Page>
   );
 }
-
 

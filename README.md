@@ -136,6 +136,36 @@ curl "http://localhost:PORT/internal/queue/drain?key=$CRON_SECRET"
 curl "http://localhost:PORT/internal/digest?key=$CRON_SECRET"
 ```
 
+## BullMQ worker (high‑throughput queue)
+
+We use Redis + BullMQ for production‑grade job processing.
+
+Env vars (examples):
+```
+# Redis
+REDIS_URL=redis://:password@host:6379
+# or
+REDIS_HOST=127.0.0.1
+REDIS_PORT=6379
+REDIS_PASSWORD=...
+REDIS_TLS=0
+
+# Worker tuning
+WORKER_CONCURRENCY=10
+SHOP_LOCK_TTL_MS=60000
+```
+
+Install & run worker locally:
+```
+npm install
+npm run worker
+```
+
+What it does:
+- Enqueue: UI calls Bull producer which creates a `Run` row, then adds a `SCENARIO_RUN` job with `{ shopId, scenarioId, runId }`.
+- Process: Worker claims jobs with per‑shop lock, calls `runScenarioById(scenarioId, runId)`, writes results back to the `Run` row.
+- Retry/backoff: exponential retry for transient failures; per‑shop serialization via Redis lock.
+
 ## Permissions & scopes
 
 - Admin GraphQL (app scopes via Shopify CLI / app config):

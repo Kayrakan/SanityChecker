@@ -43,6 +43,16 @@ function gramsFrom(weight: number | null | undefined, unit: string | null | unde
   }
 }
 
+function asNumberMoney(m: any): number | undefined {
+  if (m == null) return undefined;
+  if (typeof m === 'object') {
+    const n = Number(m?.amount);
+    return isNaN(n) ? undefined : n;
+  }
+  const n = Number(m);
+  return isNaN(n) ? undefined : n;
+}
+
 function normalizeVariant(node: any, product: any) {
   const levels = node?.inventoryItem?.inventoryLevels?.edges ?? [];
   const inventoryQty = levels.reduce((sum: number, e: any) => {
@@ -61,7 +71,7 @@ function normalizeVariant(node: any, product: any) {
     variantTitle: node?.title,
     sku: node?.sku || "",
     imageUrl,
-    price: undefined as number | undefined,
+    price: asNumberMoney((node as any)?.price),
     currencyCode: undefined as string | undefined,
     grams: 0,
     weightKg: 0,
@@ -74,11 +84,17 @@ function normalizeVariant(node: any, product: any) {
 
 function buildVariantQueryString({ term, vendor, productType }: { term?: string; vendor?: string; productType?: string; }) {
   const parts: string[] = [];
-  parts.push("status:active");
+  // Ensure query is never blank and restrict to active parent products
+  parts.push("product_status:active");
   if (term) {
-    const t = term.replace(/\"/g, '\\"');
-    // Match SKU exactly and title loosely
-    parts.push(`(sku:${t} OR title:*${t}*)`);
+    const tokens = String(term).trim().split(/\s+/).filter(Boolean);
+    if (tokens.length > 0) {
+      const clauses = tokens.map((tok) => {
+        const safe = tok.replace(/["\\]/g, "");
+        return `((sku:*${safe}*) OR (title:*${safe}*) OR (product_title:*${safe}*))`;
+      });
+      parts.push(clauses.join(" AND "));
+    }
   }
   if (vendor) parts.push(`product_vendor:${JSON.stringify(vendor)}`);
   if (productType) parts.push(`product_type:${JSON.stringify(productType)}`);
@@ -106,9 +122,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const restrictive = !!collectionId || !!vendor || !!productType;
   console.log(`[variant-search] term="${term}", restrictive=${restrictive}, collectionId="${collectionId}", vendor="${vendor}", productType="${productType}"`);
   
-  if (term.length > 0 && term.length < 2 && !restrictive) {
-    return bad("Type at least 2 characters or choose a Collection to search.", 400);
-  }
+  // Allow single-character searches; earlier guard was too strict for users
 
   const cacheKey = buildKey(url);
   if (cacheKey === lastKey && Date.now() - lastTs < CACHE_TTL_MS && lastValue) {
@@ -156,13 +170,26 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     while (rawItems.length < pageSize && safety-- > 0) {
       if (useProductFirst) {
         const qParts = ["status:active"] as string[];
-        if (collectionId) qParts.push(`collection_id:${JSON.stringify(collectionId)}`);
+        if (collectionId) {
+          // Accept either a numeric ID or a GID and normalize to numeric for search syntax
+          const collNumeric = (collectionId.match(/\d+$/)?.[0]) || collectionId;
+          qParts.push(`collection_id:${collNumeric}`);
+        }
         if (vendor) qParts.push(`vendor:${JSON.stringify(vendor)}`);
         if (productType) qParts.push(`product_type:${JSON.stringify(productType)}`);
-        if (term) qParts.push(`title:*${term.replace(/\"/g, '\\"')}*`);
+        if (term) {
+          const tokens = String(term).trim().split(/\s+/).filter(Boolean);
+          if (tokens.length > 0) {
+            const clauses = tokens.map((tok) => {
+              const safe = tok.replace(/["\\]/g, "");
+              return `((sku:*${safe}*) OR (title:*${safe}*))`;
+            });
+            qParts.push(clauses.join(" AND "));
+          }
+        }
         const query = qParts.join(" ");
         console.log(`[variant-search] Product query: "${query}"`);
-        const data = await adminGraphqlJson<any>(admin, `#graphql\nquery Products($first:Int!,$after:String,$query:String!){\n  products(first:$first,after:$after,query:$query,sortKey:TITLE){\n    edges{ cursor node{ id title vendor productType status featuredImage{url} variants(first:50){ edges{ node{ id title sku image{url} inventoryItem{ inventoryLevels(first:10){ edges{ node{ quantities(names: [\"available\"]) { name quantity } } } } } } } } } }\n    pageInfo{ hasNextPage endCursor }\n  }\n}`, { first: 50, after: nextAfter, query });
+        const data = await adminGraphqlJson<any>(admin, `#graphql\nquery Products($first:Int!,$after:String,$query:String!){\n  products(first:$first,after:$after,query:$query,sortKey:TITLE){\n    edges{ cursor node{ id title vendor productType status featuredImage{url} variants(first:50){ edges{ node{ id title sku image{url} price inventoryItem{ inventoryLevels(first:10){ edges{ node{ quantities(names: [\"available\"]) { name quantity } } } } } } } } } }\n    pageInfo{ hasNextPage endCursor }\n  }\n}`, { first: 50, after: nextAfter, query });
         const edges = data?.data?.products?.edges || [];
         for (const e of edges) {
           const p = e?.node;
@@ -184,7 +211,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       } else {
         const query = buildVariantQueryString({ term, vendor, productType });
         console.log(`[variant-search] Variant query: "${query}"`);
-        const data = await adminGraphqlJson<any>(admin, `#graphql\nquery Variants($first:Int!,$after:String,$query:String!,$sortKey:ProductVariantSortKeys,$reverse:Boolean){\n  productVariants(first:$first,after:$after,query:$query,sortKey:$sortKey,reverse:$reverse){\n    edges{ cursor node{ id title sku image{url} product{ id title vendor productType status featuredImage{url} } inventoryItem{ inventoryLevels(first:10){ edges{ node{ quantities(names: [\"available\"]) { name quantity } } } } } } }\n    pageInfo{ hasNextPage endCursor }\n  }\n}`, { first: 50, after: nextAfter, query, sortKey, reverse });
+        const data = await adminGraphqlJson<any>(admin, `#graphql\nquery Variants($first:Int!,$after:String,$query:String!,$sortKey:ProductVariantSortKeys,$reverse:Boolean){\n  productVariants(first:$first,after:$after,query:$query,sortKey:$sortKey,reverse:$reverse){\n    edges{ cursor node{ id title sku image{url} price product{ id title vendor productType status featuredImage{url} } inventoryItem{ inventoryLevels(first:10){ edges{ node{ quantities(names: [\"available\"]) { name quantity } } } } } } }\n    pageInfo{ hasNextPage endCursor }\n  }\n}`, { first: 50, after: nextAfter, query, sortKey, reverse });
         const edges = data?.data?.productVariants?.edges || [];
         for (const e of edges) {
           const v = e?.node;
@@ -209,6 +236,39 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     const message = String(err?.message || "We couldn’t reach Shopify right now—retry in a moment.");
     return bad(message, 502);
   }
+
+  // Fallback: if variant search yielded nothing for a term-only search, try a product-first pass
+  try {
+    if (rawItems.length === 0 && term && !useProductFirst) {
+      const qParts = ["status:active"] as string[];
+      const tokens = String(term).trim().split(/\s+/).filter(Boolean);
+      if (tokens.length > 0) {
+        const clauses = tokens.map((tok) => {
+          const w = JSON.stringify(`*${tok}*`);
+          return `((sku:${w}) OR (title:${w}))`;
+        });
+        qParts.push(clauses.join(" AND "));
+      }
+      if (vendor) qParts.push(`vendor:${JSON.stringify(vendor)}`);
+      if (productType) qParts.push(`product_type:${JSON.stringify(productType)}`);
+      const query = qParts.join(" ");
+      const data = await adminGraphqlJson<any>(admin, `#graphql\nquery Products($first:Int!,$after:String,$query:String!){\n  products(first:$first,after:$after,query:$query,sortKey:TITLE){\n    edges{ cursor node{ id title vendor productType status featuredImage{url} variants(first:50){ edges{ node{ id title sku image{url} price inventoryItem{ inventoryLevels(first:10){ edges{ node{ quantities(names: [\"available\"]) { name quantity } } } } } } } } } }\n    pageInfo{ hasNextPage endCursor }\n  }\n}`, { first: 50, after: undefined, query });
+      const edges = data?.data?.products?.edges || [];
+      for (const e of edges) {
+        const p = e?.node;
+        if (!p || p?.status !== "ACTIVE") continue;
+        const vEdges = p?.variants?.edges || [];
+        for (const ve of vEdges) {
+          const v = ve?.node;
+          if (!v) continue;
+          const row = normalizeVariant(v, p);
+          rawItems.push(row);
+          if (rawItems.length >= pageSize) break;
+        }
+        if (rawItems.length >= pageSize) break;
+      }
+    }
+  } catch {}
 
   // Enrich via Storefront API for price/weight/requiresShipping
   try {
