@@ -3,6 +3,11 @@ import { unauthenticatedStorefrontClient } from "./shopify-clients.server";
 import { ensureStorefrontToken, rotateStorefrontToken } from "./storefront-token.server";
 import { createRun, completeRun } from "../models/run.server";
 import { buildAdminLinks } from "./diagnostics-links.server";
+import { lookupCityProvince } from "./address-lookup.server";
+import { getShopifyCountryRequirements } from "./countries.server";
+import { isCountryEnabledInMarkets } from "./markets.server";
+import { fetchVariantInfos } from "./variants.server";
+import { listShopifyProvinces } from "./countries.server";
 
 type Money = { amount: string; currencyCode: string };
 type DeliveryOption = { handle: string; title: string; estimatedCost: Money };
@@ -68,19 +73,29 @@ function buildDiagnostics(groups: any[], options: DeliveryOption[] | null, subto
 }
 
 export async function runScenarioById(scenarioId: string, runId?: string) {
+  console.log("running scenario", scenarioId, runId);
   const db: any = prisma;
   const scenario = await db.scenario.findUnique({ where: { id: scenarioId }, include: { shop: { include: { settings: true } } } });
   if (!scenario) throw new Error("Scenario not found");
   const { shop } = scenario;
-  // Ensure a Storefront token exists (provision via Admin API if needed)
-  const { token, version } = await ensureStorefrontToken(shop.domain);
-  const client = await unauthenticatedStorefrontClient(shop.domain, token, version);
+  
 
   // Build cart
   const lines = scenario.productVariantIds.map((variantId: string, idx: number) => ({
     merchandiseId: variantId,
     quantity: scenario.quantities[idx] ?? 1,
   }));
+
+  // If the scenario has no items, we cannot get shipping rates. Fail fast with a clear diagnostic.
+  if (!Array.isArray(lines) || lines.length === 0) {
+    const diag = [
+      { code: "EMPTY_CART", message: "Scenario has no items. Add at least one physical product with weight > 0." },
+      { code: "ADMIN_LINKS", links: buildAdminLinks(shop.domain, {}) },
+    ];
+    const emptyRun = await createRun(scenario.id, shop.id);
+    await completeRun(emptyRun.id, "FAIL", { groups: [], options: [], subtotal: null }, diag);
+    return await db.run.findUnique({ where: { id: emptyRun.id } });
+  }
 
   // Use provided runId when present (idempotent). Otherwise create a new Run.
   let run = runId ? await db.run.findUnique({ where: { id: runId } }) : null;
@@ -89,19 +104,55 @@ export async function runScenarioById(scenarioId: string, runId?: string) {
   }
 
   try {
+    // Ensure a Storefront token exists (provision via Admin API if needed)
+    console.log("ensuring storefront token", shop.domain);
+    const ensured = await ensureStorefrontToken(shop.domain);
+    console.log("ensured", ensured);
+    let token = ensured.token;
+    console.log("storefront token", token);
+    let version = ensured.version;
+    let client = await unauthenticatedStorefrontClient(shop.domain, token, version);
     const cartCreateRes = await client.graphql(
       `#graphql
-      mutation CreateCart($lines: [CartLineInput!]!) {
-        cartCreate(input: { lines: $lines }) { cart { id } }
+      mutation CreateCart($lines: [CartLineInput!]!, $buyerIdentity: CartBuyerIdentityInput) {
+        cartCreate(input: { lines: $lines, buyerIdentity: $buyerIdentity }) { cart { id } }
       }
       `,
-      { lines }
+      { lines, buyerIdentity: { countryCode: scenario.countryCode } }
     );
     const cartCreateJson = await cartCreateRes.json();
     const cartId = cartCreateJson?.data?.cartCreate?.cart?.id;
     if (!cartId) throw new Error("Cart creation failed");
 
     // Set buyer identity address
+    // Resolve city/province dynamically when missing using postal-code lookup (best-effort, country-agnostic)
+    let derivedCity: string | undefined = scenario.city ?? undefined;
+    let derivedProvinceCode: string | undefined = scenario.provinceCode ?? undefined;
+    try {
+      if (scenario.countryCode && scenario.postalCode && (!derivedCity || !derivedProvinceCode)) {
+        const looked = await lookupCityProvince(String(scenario.countryCode), String(scenario.postalCode));
+        if (!derivedCity && looked.city) derivedCity = looked.city;
+        if (!derivedProvinceCode && looked.provinceCode) derivedProvinceCode = looked.provinceCode;
+      }
+    } catch {}
+    // Normalize province to Shopify subdivision code when possible (helps countries like TR)
+    try {
+      if (scenario.countryCode) {
+        const provinces = await listShopifyProvinces(shop.domain, scenario.countryCode).catch(() => []);
+        const norm = (s: string | undefined) => String(s || '').trim().toLowerCase();
+        const targetName = norm(derivedProvinceCode) || norm(derivedCity);
+        if (!derivedProvinceCode && targetName && Array.isArray(provinces) && provinces.length > 0) {
+          const exact = provinces.find((p: any) => norm(p.name) === targetName || norm(p.code) === targetName || norm(p.code).endsWith(`-${targetName}`));
+          const loose = exact || provinces.find((p: any) => norm(p.name).includes(targetName));
+          if (loose?.code) {
+            derivedProvinceCode = loose.code;
+          }
+        }
+      }
+    } catch {}
+    // Choose address1 from scenario if provided; otherwise synthesize
+    const districtValue = String(((scenario as any)?.expectations?.district ?? "")).trim();
+    const address1 = String((scenario as any)?.address1 || '').trim() || [districtValue, String(scenario.city || "").trim()].filter(Boolean).join(", ") || "Sanity Test Address";
     let identityRes = await client.graphql(
       `#graphql
       mutation CartBuyerIdentityUpdate($cartId: ID!, $buyerIdentity: CartBuyerIdentityInput!) {
@@ -120,8 +171,14 @@ export async function runScenarioById(scenarioId: string, runId?: string) {
               deliveryAddress: {
                 countryCode: scenario.countryCode,
                 postalCode: scenario.postalCode ?? undefined,
-                provinceCode: scenario.provinceCode ?? undefined,
-                city: scenario.city ?? undefined,
+                provinceCode: derivedProvinceCode,
+                city: derivedCity,
+                address1,
+                address2: String((scenario as any)?.address2 || '') || undefined,
+                firstName: String((scenario as any)?.firstName || 'Test'),
+                lastName: String((scenario as any)?.lastName || 'Runner'),
+                company: String((scenario as any)?.company || 'Sanity Checker'),
+                phone: String((scenario as any)?.phone || '0000000000'),
               },
             },
           ],
@@ -156,8 +213,9 @@ export async function runScenarioById(scenarioId: string, runId?: string) {
                   deliveryAddress: {
                     countryCode: scenario.countryCode,
                     postalCode: scenario.postalCode ?? undefined,
-                    provinceCode: scenario.provinceCode ?? undefined,
-                    city: scenario.city ?? undefined,
+                    provinceCode: derivedProvinceCode,
+                    city: derivedCity,
+                    address1,
                     firstName: 'Test',
                     lastName: 'Runner',
                     company: 'Sanity Checker',
@@ -192,7 +250,9 @@ export async function runScenarioById(scenarioId: string, runId?: string) {
       );
     }
 
-    const queryRes = await client.graphql(
+    // small retry helper since carrier aggregators may respond slightly after address set
+    async function fetchDeliveryOptionsOnce(cl: any) {
+      return await cl.graphql(
       `#graphql
       query CartDeliveryOptions($cartId: ID!) {
         cart(id: $cartId) {
@@ -211,10 +271,14 @@ export async function runScenarioById(scenarioId: string, runId?: string) {
       `,
       { cartId }
     );
+    }
+    const queryRes = await fetchDeliveryOptionsOnce(client);
     const queryJson = await queryRes.json();
     if (queryRes.status === 403) {
       // Token likely revoked; rotate and retry once
       const rotated = await rotateStorefrontToken(shop.domain);
+      token = rotated.token;
+      version = rotated.version;
       const retryClient = await unauthenticatedStorefrontClient(shop.domain, rotated.token, rotated.version);
       const retryRes = await retryClient.graphql(
         `#graphql
@@ -238,11 +302,68 @@ export async function runScenarioById(scenarioId: string, runId?: string) {
       await completeRun(run.id, status, { groups, options, subtotal }, diagnostics);
       return await db.run.findUnique({ where: { id: run.id } });
     }
-    const groups = queryJson?.data?.cart?.deliveryGroups ?? [];
-    const subtotal: Money | null = queryJson?.data?.cart?.cost?.subtotalAmount ?? null;
-    const options: DeliveryOption[] = groups.flatMap((g: any) => g.deliveryOptions ?? []);
+    let groups = queryJson?.data?.cart?.deliveryGroups ?? [];
+    let subtotal: Money | null = queryJson?.data?.cart?.cost?.subtotalAmount ?? null;
+    let options: DeliveryOption[] = groups.flatMap((g: any) => g.deliveryOptions ?? []);
+
+    // Brief retry (2x) if first fetch returns empty; some carriers are eventually consistent after identity update
+    if ((!options || options.length === 0) && queryRes.ok) {
+      for (let i = 0; i < 2; i++) {
+        await new Promise(r => setTimeout(r, 400));
+        const r2 = await fetchDeliveryOptionsOnce(client);
+        const j2 = await r2.json();
+        groups = j2?.data?.cart?.deliveryGroups ?? groups;
+        subtotal = j2?.data?.cart?.cost?.subtotalAmount ?? subtotal;
+        options = groups.flatMap((g: any) => g.deliveryOptions ?? []);
+        if (options && options.length > 0) break;
+      }
+    }
 
     const diagnostics = buildDiagnostics(groups, options, subtotal, scenario.expectations as any);
+    // Enrich diagnostics when no rates were returned
+    if (!options || options.length === 0) {
+      try {
+        const [marketEnabled, variantInfos, countryReq] = await Promise.all([
+          isCountryEnabledInMarkets(shop.domain, scenario.countryCode).catch(() => undefined),
+          fetchVariantInfos(shop.domain, Array.isArray(scenario.productVariantIds) ? scenario.productVariantIds : []).catch(() => []),
+          getShopifyCountryRequirements(shop.domain, scenario.countryCode).catch(() => undefined),
+        ]);
+
+        if (marketEnabled === false) {
+          diagnostics.push({ code: "MARKET_DISABLED", message: `${String(scenario.countryCode).toUpperCase()} is not enabled in Shopify Markets` });
+        }
+
+        const nonPhysical = (variantInfos || []).some(v => !v.requiresShipping);
+        const zeroWeight = (variantInfos || []).some(v => v.requiresShipping && ((v.grams || 0) === 0));
+        if (nonPhysical) {
+          diagnostics.push({ code: "NON_PHYSICAL_PRODUCT", message: "Cart contains non-shippable items (requiresShipping = false)." });
+        }
+        if (zeroWeight) {
+          diagnostics.push({ code: "WEIGHT_MISSING", message: "One or more shippable items have zero weight." });
+        }
+
+        if (countryReq && countryReq.provinceRequired && !derivedProvinceCode) {
+          diagnostics.push({ code: "PROVINCE_REQUIRED", message: "Province/state is required for this country but none was provided or resolved." });
+        }
+        if (countryReq && countryReq.zipRequired && !scenario.postalCode) {
+          diagnostics.push({ code: "POSTAL_REQUIRED", message: "Postal/ZIP code is required for this country but none was provided." });
+        }
+
+        // Attach context to help compare with Checkout
+        diagnostics.push({
+          code: "CART_CONTEXT",
+          context: {
+            countryCode: scenario.countryCode,
+            postalCode: scenario.postalCode ?? null,
+            provinceCode: derivedProvinceCode ?? null,
+            city: derivedCity ?? null,
+            address1,
+            linesCount: Array.isArray(lines) ? lines.length : 0,
+            variants: (variantInfos || []).map(v => ({ id: v.id, requiresShipping: v.requiresShipping, grams: v.grams })),
+          }
+        });
+      } catch {}
+    }
     if (diagnostics.length > 0) {
       const links = buildAdminLinks(shop.domain, {});
       diagnostics.push({ code: "ADMIN_LINKS", links });
@@ -259,7 +380,13 @@ export async function runScenarioById(scenarioId: string, runId?: string) {
     await completeRun(run.id, status, { groups, options, subtotal }, diagnostics);
     return await db.run.findUnique({ where: { id: run.id } });
   } catch (err: any) {
-    await completeRun(run.id, "ERROR", null, [{ code: "EXCEPTION", message: err?.message }]);
+    const message = String(err?.message || 'Unknown error');
+    const isTokenIssue = message.includes('Storefront token') || message.includes('Offline admin session') || message.includes('storefrontAccessToken');
+    if (isTokenIssue) {
+      await completeRun(run.id, "BLOCKED", null, [{ code: "STOREFRONT_TOKEN_ERROR", message }]);
+    } else {
+      await completeRun(run.id, "ERROR", null, [{ code: "EXCEPTION", message }]);
+    }
     return await db.run.findUnique({ where: { id: run.id } });
   }
 }

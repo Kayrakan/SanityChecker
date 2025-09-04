@@ -1,4 +1,4 @@
-import { Worker, QueueScheduler } from "bullmq";
+import { Worker } from "bullmq";
 import { bullConnection } from "../app/services/queue-bull.server";
 import { runScenarioById } from "../app/services/runner.server";
 import prisma from "../app/db.server";
@@ -21,12 +21,12 @@ async function releaseShopLock(shopId: string) {
 
 const concurrency = Number(process.env.WORKER_CONCURRENCY || 10);
 
-// Ensure delayed/retry jobs are managed
-const scheduler = new QueueScheduler("jobs", { connection: bullConnection as any });
+// BullMQ v5+ does not require an explicit QueueScheduler; delayed/retry jobs are handled internally.
 
 const worker = new Worker(
   "jobs",
   async (job) => {
+    console.log("Processing job", job.name, job.id, JSON.stringify(job.data));
     if (job.name === "SCENARIO_RUN") {
       const { shopId, scenarioId, runId } = job.data as { shopId: string; scenarioId: string; runId?: string };
       // Serialize per shop
@@ -36,7 +36,9 @@ const worker = new Worker(
         throw new Error("SHOP_LOCKED");
       }
       try {
-        await runScenarioById(scenarioId, runId);
+        console.log("Running scenario", scenarioId, "runId", runId || "(new)");
+        const result = await runScenarioById(scenarioId, runId);
+        console.log("Run complete", result?.id, result?.status);
         return true;
       } finally {
         await releaseShopLock(shopId);
@@ -66,7 +68,7 @@ worker.on("ready", () => {
   console.log("BullMQ worker ready (queue: jobs, concurrency:", concurrency, ")");
 });
 worker.on("failed", (job, err) => {
-  console.error("Job failed", job?.name, job?.id, err?.message);
+  console.error("Job failed", job?.name, job?.id, err?.message, err?.stack);
 });
 worker.on("completed", (job) => {
   console.log("Job completed", job.name, job.id);

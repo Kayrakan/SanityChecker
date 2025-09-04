@@ -11,6 +11,7 @@ export { loader as internalDigestLoader } from "./routes/internal.digest";
 export { loader as internalMarketInfoLoader } from "./routes/internal.market-info";
 export { loader as internalProvincesLoader } from "./routes/internal.provinces";
 export { loader as internalAddressLookupLoader } from "./routes/internal.address-lookup";
+export { loader as internalCountryMetaLoader } from "./routes/internal.country-meta";
 export { loader as internalCollectionsLoader } from "./routes/internal.collections";
 export { loader as internalFacetsLoader } from "./routes/internal.facets";
 export { loader as internalVariantProfilesLoader } from "./routes/internal.variant-profiles";

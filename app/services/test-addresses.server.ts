@@ -7,6 +7,7 @@ const DEFAULTS: Record<string, TestAddress> = {
   CA: { countryCode: "CA", postalCode: "M5V 2T6", provinceCode: "ON" },
   FR: { countryCode: "FR", postalCode: "75001" },
   AU: { countryCode: "AU", postalCode: "2000", provinceCode: "NSW" },
+  TR: { countryCode: "TR", postalCode: "34010" },
 };
 
 export function getTestAddress(countryCode: string): TestAddress {

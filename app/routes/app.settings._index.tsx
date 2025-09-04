@@ -32,6 +32,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       slackWebhookUrl: String(form.get("slackWebhookUrl") || ""),
       notificationEmail: String(form.get("notificationEmail") || ""),
       // storefront token is provisioned automatically when needed
+      storefrontAccessToken: (String(form.get("storefrontAccessToken") || "").trim() || undefined),
     },
   });
   return redirect("/app/settings");
@@ -51,7 +52,8 @@ export default function SettingsIndex() {
             <TextField name="notificationEmail" label="Notification email" defaultValue={settings?.notificationEmail ?? ''} autoComplete="off" />
             <TextField name="slackWebhookUrl" label="Slack webhook URL" defaultValue={settings?.slackWebhookUrl ?? ''} autoComplete="off" />
             <Text as="h3" variant="headingMd">Storefront API</Text>
-            <Text as="p" variant="bodyMd">The app will automatically provision a Storefront access token when needed. No action required.</Text>
+            <Text as="p" variant="bodyMd">The app will automatically provision a Storefront access token when needed. If automatic provisioning is blocked by permissions, paste an existing token below as a temporary workaround.</Text>
+            <TextField name="storefrontAccessToken" label="Storefront access token (optional)" defaultValue={settings?.storefrontAccessToken ?? ''} autoComplete="off" />
             <InlineStack>
               <Button submit variant="primary">Save</Button>
             </InlineStack>

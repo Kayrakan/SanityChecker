@@ -1,4 +1,3 @@
-import shopify, { authenticate, sessionStorage, apiVersion } from "../shopify.server";
 import prisma from "../db.server";
 import { consume as rlConsume } from "./rate-limit.server";
 
@@ -22,6 +21,7 @@ export async function requestWithRetry(url: string, init: RequestInit, attempts 
 }
 
 export async function getAdminClient(request: Request) {
+  const { authenticate } = await import("../shopify.server");
   const { admin, session } = await authenticate.admin(request);
   return { admin, session };
 }
@@ -45,19 +45,22 @@ export async function unauthenticatedStorefrontClient(shop: string, storefrontAc
   };
 }
 
-export async function getAdminClientByShop(shopDomain: string) {
+// Use the same Admin API version as the app (defaults to the latest set in shopify.server.ts).
+// Fall back to 2025-07 to ensure availability of Storefront token APIs.
+const ADMIN_API_VERSION = process.env.SHOPIFY_API_VERSION || "2025-07";
+
+async function loadOfflineSession(shopDomain: string) {
   const offlineId = `offline_${shopDomain}`;
-  let session = await sessionStorage.loadSession(offlineId as any);
-  if (!session) {
-    // Fallback to latest available session for this shop (online), best-effort
-    const last = await (prisma as any).session.findFirst({ where: { shop: shopDomain }, orderBy: { expires: "desc" } });
-    if (last) {
-      session = { ...last, shop: shopDomain } as any;
-    }
-  }
+  const exact = await (prisma as any).session.findUnique({ where: { id: offlineId } });
+  if (exact) return { ...exact, shop: shopDomain } as any;
+  const last = await (prisma as any).session.findFirst({ where: { shop: shopDomain }, orderBy: { expires: "desc" } });
+  return last ? ({ ...last, shop: shopDomain } as any) : null;
+}
+
+export async function getAdminClientByShop(shopDomain: string) {
+  const session = await loadOfflineSession(shopDomain);
   if (!session) throw new Error(`Offline admin session not found for ${shopDomain}`);
-  const version = String(apiVersion);
-  const endpoint = `https://${shopDomain}/admin/api/${version}/graphql.json`;
+  const endpoint = `https://${shopDomain}/admin/api/${ADMIN_API_VERSION}/graphql.json`;
   const admin = {
     async graphql(query: string, variables?: Record<string, any>) {
       try { await rlConsume("admin", shopDomain); } catch {}
@@ -96,17 +99,9 @@ export async function adminGraphqlJson<T = any>(admin: { graphql: (q: string, v?
 }
 
 export async function fetchAdminRest(shopDomain: string, path: string, init?: RequestInit) {
-  const offlineId = `offline_${shopDomain}`;
-  let session = await sessionStorage.loadSession(offlineId as any);
-  if (!session) {
-    const last = await (prisma as any).session.findFirst({ where: { shop: shopDomain }, orderBy: { expires: "desc" } });
-    if (last) {
-      session = { ...last, shop: shopDomain } as any;
-    }
-  }
+  const session = await loadOfflineSession(shopDomain);
   if (!session) throw new Error(`Offline admin session not found for ${shopDomain}`);
-  const version = String(apiVersion);
-  const endpoint = `https://${shopDomain}/admin/api/${version}/${path.replace(/^\//, "")}`;
+  const endpoint = `https://${shopDomain}/admin/api/${ADMIN_API_VERSION}/${path.replace(/^\//, "")}`;
   const res = await requestWithRetry(endpoint, {
     method: init?.method || "GET",
     headers: {

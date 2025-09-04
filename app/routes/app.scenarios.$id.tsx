@@ -58,13 +58,19 @@ export const action = async ({ params, request }: ActionFunctionArgs) => {
   if (intent === "save") {
     await prisma.scenario.update({
       where: { id },
-      data: {
+      data: ({
         name: String(form.get("name")),
         active: getBoolean("active"),
         countryCode: String(form.get("countryCode")),
         postalCode: String(form.get("postalCode") || ""),
         provinceCode: String(form.get("provinceCode") || ""),
         city: String(form.get("city") || ""),
+        firstName: String(form.get("firstName") || ""),
+        lastName: String(form.get("lastName") || ""),
+        company: String(form.get("company") || ""),
+        address1: String(form.get("address1") || ""),
+        address2: String(form.get("address2") || ""),
+        phone: String(form.get("phone") || ""),
         discountCode: String(form.get("discountCode") || "") || undefined,
         expectations: (() => {
           const exp: any = {
@@ -82,7 +88,7 @@ export const action = async ({ params, request }: ActionFunctionArgs) => {
         alertLevel: (String(form.get("alertLevel")) === "FAIL" ? "FAIL" : "WARN") as any,
         consecutiveFailThreshold: getBoolean("alertDampen") ? 2 : null,
         notes: String(form.get("notes") || "") || undefined,
-      },
+      }) as any,
     });
     if (String(form.get('runAfterSave')) === '1') {
       // enqueue immediate run
@@ -111,6 +117,12 @@ export default function ScenarioDetail() {
   const [postalCode, setPostalCode] = useState<string>(scenario.postalCode ?? '');
   const [provinceCode, setProvinceCode] = useState<string>(scenario.provinceCode ?? '');
   const [city, setCity] = useState<string>(scenario.city ?? '');
+  const [firstName, setFirstName] = useState<string>(String((scenario as any).firstName ?? ''));
+  const [lastName, setLastName] = useState<string>(String((scenario as any).lastName ?? ''));
+  const [company, setCompany] = useState<string>(String((scenario as any).company ?? ''));
+  const [address1, setAddress1] = useState<string>(String((scenario as any).address1 ?? ''));
+  const [address2, setAddress2] = useState<string>(String((scenario as any).address2 ?? ''));
+  const [phone, setPhone] = useState<string>(String((scenario as any).phone ?? ''));
   const [discountCode, setDiscountCode] = useState<string>(scenario.discountCode ?? '');
   const [active, setActive] = useState<boolean>(!!scenario.active);
   const [screenshotEnabled, setScreenshotEnabled] = useState<boolean>(!!scenario.screenshotEnabled);
@@ -123,13 +135,28 @@ export default function ScenarioDetail() {
   const [boundsTitle, setBoundsTitle] = useState<string>((scenario.expectations as any)?.boundsTitle || '');
   const [notes, setNotes] = useState<string>(scenario.notes ?? '');
   const [alertDampen, setAlertDampen] = useState<boolean>(!!scenario.consecutiveFailThreshold && scenario.consecutiveFailThreshold >= 2);
-  const [district, setDistrict] = useState<string>(String((scenario.expectations as any)?.district || ''));
+  // Removed Turkey-specific district input to better align with Shopify Checkout
 
   const [provinceOptions, setProvinceOptions] = useState<{ code: string; name: string }[]>(Array.isArray(provinces) ? (provinces as any[]).filter(Boolean) : []);
   const [marketCurrency, setMarketCurrency] = useState<string | undefined>(currency);
   const [marketEnabledState, setMarketEnabledState] = useState<boolean>(!!marketEnabled);
   const [marketsUrl, setMarketsUrl] = useState<string | undefined>(undefined);
   const [zipStateMismatch, setZipStateMismatch] = useState<boolean>(false);
+  // Dynamic country metadata fetched via internal endpoint
+
+  const [countryMeta, setCountryMeta] = useState<any | null>(null);
+  useEffect(() => {
+    (async () => {
+      if (!countryCode) return;
+      try {
+        const res = await fetch(`/internal/country-meta?countryCode=${encodeURIComponent(countryCode)}`);
+        const json = await res.json();
+        setCountryMeta(json || null);
+      } catch {
+        setCountryMeta(null);
+      }
+    })();
+  }, [countryCode]);
 
   useEffect(() => {
     // Fetch market info and provinces when country changes
@@ -158,6 +185,12 @@ export default function ScenarioDetail() {
   const [lookupProvince, setLookupProvince] = useState<string | undefined>(undefined);
   const [lookupCity, setLookupCity] = useState<string | undefined>(undefined);
 
+  // Helper: build label with '*' when Shopify marks the field required
+  const labelWithStar = (key: string, fallback: string): string => {
+    const base = String((countryMeta?.labels?.[key] || (key === 'provinceCode' ? countryMeta?.provinceLabel : countryMeta?.cityLabel) || fallback) || fallback);
+    return `${base}${countryMeta?.required?.[key] ? ' *' : ''}`;
+  };
+
   useEffect(() => {
     const data: any = fetcher.data;
     if (data && (data.city || data.provinceCode)) {
@@ -179,6 +212,12 @@ export default function ScenarioDetail() {
     setPostalCode(String(scenario.postalCode ?? ''));
     setProvinceCode(String(scenario.provinceCode ?? ''));
     setCity(String(scenario.city ?? ''));
+    setFirstName(String((scenario as any).firstName ?? ''));
+    setLastName(String((scenario as any).lastName ?? ''));
+    setCompany(String((scenario as any).company ?? ''));
+    setAddress1(String((scenario as any).address1 ?? ''));
+    setAddress2(String((scenario as any).address2 ?? ''));
+    setPhone(String((scenario as any).phone ?? ''));
     setDiscountCode(String(scenario.discountCode ?? ''));
     setActive(!!scenario.active);
     setScreenshotEnabled(!!scenario.screenshotEnabled);
@@ -191,7 +230,6 @@ export default function ScenarioDetail() {
     setBoundsTitle(String((scenario.expectations as any)?.boundsTitle || ''));
     setNotes(String(scenario.notes ?? ''));
     setAlertDampen(!!scenario.consecutiveFailThreshold && scenario.consecutiveFailThreshold >= 2);
-    setDistrict(String((scenario.expectations as any)?.district || ''));
   }, [scenario]);
 
   useEffect(() => {
@@ -236,38 +274,58 @@ export default function ScenarioDetail() {
               <input type="hidden" name="active" value="0" />
               <Checkbox label="Active" name="active" value="1" checked={active} onChange={(checked) => setActive(!!checked)} />
               <InlineStack gap="400">
-                <Select label="Country" name="countryCode" options={(Array.isArray(countries) ? (countries as any[]).map((c: any) => ({ label: c.label, value: c.value })) : [])} value={countryCode} onChange={(v) => { setCountryCode(String(v)); setPostalCode(''); setProvinceCode(''); setCity(''); setDistrict(''); setLookupProvince(undefined); setLookupCity(undefined); setZipStateMismatch(false); }} />
-                {(() => {
-                  const isHK = countryCode === 'HK';
-                  const isAE = countryCode === 'AE';
-                  const showPostal = !(isHK || isAE);
-                  if (!showPostal) return null;
-                  return (
-                    <TextField label="Postal code" name="postalCode" autoComplete="off" value={postalCode} onChange={setPostalCode} helpText="We’ll auto-fill city/state when possible." onBlur={() => {
-                      if (postalCode && countryCode) {
-                        const url = `/internal/address-lookup?countryCode=${encodeURIComponent(countryCode)}&postalCode=${encodeURIComponent(postalCode)}`;
-                        fetcher.load(url);
-                      }
-                    }} />
-                  );
-                })()}
-                {(() => {
-                  const isHK = countryCode === 'HK';
-                  const isAE = countryCode === 'AE';
-                  const provinceLabel = isHK ? 'Region' : isAE ? 'Emirate' : 'State/Province';
-                  const showProvince = isHK || isAE || provinceOptions.length > 0;
-                  if (!showProvince) return null;
-                  return provinceOptions.length > 0 ? (
-                    <Select label={provinceLabel} name="provinceCode" options={provinceOptions.map(s => ({ label: s.name, value: s.code }))} value={provinceCode} onChange={(v) => setProvinceCode(String(v))} />
-                  ) : (
-                    <TextField label={provinceLabel} name="provinceCode" autoComplete="off" value={provinceCode} onChange={setProvinceCode} />
-                  );
-                })()}
-                <TextField label={'City'} name="city" autoComplete="off" value={city} onChange={setCity} />
-                {countryCode === 'TR' ? (
-                  <TextField label="District (ilçe)" name="district" autoComplete="off" value={district} onChange={setDistrict} />
-                ) : null}
+                <Select label="Country" name="countryCode" options={(Array.isArray(countries) ? (countries as any[]).map((c: any) => ({ label: c.label, value: c.value })) : [])} value={countryCode} onChange={(v) => { setCountryCode(String(v)); setPostalCode(''); setProvinceCode(''); setCity(''); setLookupProvince(undefined); setLookupCity(undefined); setZipStateMismatch(false); }} />
               </InlineStack>
+              {/* Additional country-specific fields rendered dynamically following checkout order */}
+              {Array.isArray(countryMeta?.orderedFields) ? (
+                <BlockStack gap="200">
+                  {countryMeta.orderedFields.map((group: string[], gi: number) => (
+                    <InlineStack gap="400" key={`g-${gi}`}>
+                      {group.map((field: string, idx: number) => {
+                        if (field === 'countryCode') return null;
+                        if (field === 'firstName') return (
+                          <TextField key={`f-${gi}-${idx}`} label={labelWithStar('firstName', 'First name')} name="firstName" autoComplete="off" value={firstName} onChange={setFirstName} />
+                        );
+                        if (field === 'lastName') return (
+                          <TextField key={`f-${gi}-${idx}`} label={labelWithStar('lastName', 'Last name')} name="lastName" autoComplete="off" value={lastName} onChange={setLastName} />
+                        );
+                        if (field === 'company') return (
+                          <TextField key={`f-${gi}-${idx}`} label={labelWithStar('company', 'Company')} name="company" autoComplete="off" value={company} onChange={setCompany} />
+                        );
+                        if (field === 'address1') return (
+                          <TextField key={`f-${gi}-${idx}`} label={labelWithStar('address1', 'Address')} name="address1" autoComplete="off" value={address1} onChange={setAddress1} />
+                        );
+                        if (field === 'address2') return (
+                          <TextField key={`f-${gi}-${idx}`} label={labelWithStar('address2', 'Apartment, suite, etc.')} name="address2" autoComplete="off" value={address2} onChange={setAddress2} />
+                        );
+                        if (field === 'phone') return (
+                          <TextField key={`f-${gi}-${idx}`} label={labelWithStar('phone', 'Phone')} name="phone" autoComplete="off" value={phone} onChange={setPhone} />
+                        );
+                        if (field === 'city') return (
+                          <TextField key={`f-${gi}-${idx}`} label={labelWithStar('city', 'City')} name="city" autoComplete="off" value={city} onChange={setCity} />
+                        );
+                        if (field === 'provinceCode') return (
+                          (Array.isArray(countryMeta?.provinces) && countryMeta.provinces.length > 0) ? (
+                            <Select key={`f-${gi}-${idx}`} label={labelWithStar('provinceCode', 'State/Province')} name="provinceCode" options={countryMeta.provinces.map((s: any) => ({ label: s.name, value: s.code }))} value={provinceCode} onChange={(v) => setProvinceCode(String(v))} />
+                          ) : (
+                            <TextField key={`f-${gi}-${idx}`} label={labelWithStar('provinceCode', 'State/Province')} name="provinceCode" autoComplete="off" value={provinceCode} onChange={setProvinceCode} />
+                          )
+                        );
+                        if (field === 'postalCode') return (
+                          <TextField key={`f-${gi}-${idx}`} label={labelWithStar('postalCode', 'Postal code')} name="postalCode" autoComplete="off" value={postalCode} onChange={setPostalCode} helpText="We’ll auto-fill city/state when possible." onBlur={() => {
+                            if (postalCode && countryCode) {
+                              const url = `/internal/address-lookup?countryCode=${encodeURIComponent(countryCode)}&postalCode=${encodeURIComponent(postalCode)}`;
+                              fetcher.load(url);
+                            }
+                          }} />
+                        );
+                        if (field === 'firstName,lastName') return null;
+                        return null;
+                      })}
+                    </InlineStack>
+                  ))}
+                </BlockStack>
+              ) : null}
               <InlineStack gap="200">
                 <Text tone={marketEnabledState ? 'success' : 'critical'} variant="bodySm" as="p">{marketEnabledState ? '✅ Market enabled' : '❌ Not enabled in Shopify Markets'}</Text>
                 {marketsUrl ? (
@@ -329,15 +387,14 @@ export default function ScenarioDetail() {
                 <Button submit variant="primary">Save</Button>
                 <Button submit disabled={(() => {
                   const hasItems = (scenario.productVariantIds || []).length > 0;
-                  const isHK = countryCode === 'HK';
-                  const isAE = countryCode === 'AE';
-                  const showProvince = isHK || isAE || provinceOptions.length > 0;
-                  const needsProvince = showProvince && provinceOptions.length > 0; // required only when Shopify provides provinces
-                  const needsCity = false; // optional
-                  const postalOk = true; // always optional
+                  const needsProvince = !!countryMeta?.required?.provinceCode;
+                  const needsCity = !!countryMeta?.required?.city;
+                  const needsAddress1 = !!countryMeta?.required?.address1;
+                  const postalOk = countryMeta?.required?.postalCode ? !!postalCode : true;
                   const provinceOk = needsProvince ? !!provinceCode : true;
                   const cityOk = needsCity ? !!city : true;
-                  return !(hasItems && postalOk && provinceOk && cityOk) || zipStateMismatch;
+                  const addrOk = needsAddress1 ? !!address1 : true;
+                  return !(hasItems && postalOk && provinceOk && cityOk && addrOk) || zipStateMismatch;
                 })()} onClick={() => {
                   const form = document.querySelector('form') as HTMLFormElement;
                   const hidden = document.createElement('input');

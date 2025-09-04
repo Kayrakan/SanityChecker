@@ -1,37 +1,55 @@
 import prisma from "../db.server";
-import { getAdminClientByShop } from "./shopify-clients.server";
+import { getAdminClientByShop, adminGraphqlJson, fetchAdminRest } from "./shopify-clients.server";
 
 const DEFAULT_STOREFRONT_VERSION = "2025-07";
 
-async function listTokens(admin: any) {
-  const res = await admin.graphql(
+async function listTokens(admin: any, shopDomain: string) {
+  try {
+    const json: any = await adminGraphqlJson(admin,
     `#graphql
     query ListTokens {
       storefrontAccessTokens(first: 100) {
         nodes { id accessToken title createdAt }
       }
     }`
-  );
-  const json = await res.json();
-  return (json?.data?.storefrontAccessTokens?.nodes ?? []) as Array<{ id: string; accessToken: string; createdAt: string; title: string }>;
+    );
+    return (json?.data?.storefrontAccessTokens?.nodes ?? []) as Array<{ id: string; accessToken: string; createdAt: string; title: string }>;
+  } catch (err: any) {
+    // Fallback to Admin REST if GraphQL field is unavailable
+    try {
+      const res = await fetchAdminRest(shopDomain, "storefront_access_tokens.json");
+      const text = await res.text();
+      const json = JSON.parse(text || "{}");
+      const items = Array.isArray(json?.storefront_access_tokens) ? json.storefront_access_tokens : [];
+      return items.map((t: any) => ({ id: String(t.id), accessToken: String(t.access_token || t.accessToken || ""), title: t.title || "", createdAt: t.created_at || t.createdAt })) as Array<{ id: string; accessToken: string; createdAt: string; title: string }>;
+    } catch (e) {
+      throw err;
+    }
+  }
 }
 
-async function deleteToken(admin: any, id: string) {
-  await admin.graphql(
-    `#graphql
-    mutation DeleteToken($id: ID!) {
-      storefrontAccessTokenDelete(id: $id) { deletedStorefrontAccessTokenId userErrors { message } }
-    }`,
-    { id }
-  );
+async function deleteToken(admin: any, shopDomain: string, id: string) {
+  try {
+    await adminGraphqlJson(admin,
+      `#graphql
+      mutation DeleteToken($id: ID!) {
+        storefrontAccessTokenDelete(id: $id) { deletedStorefrontAccessTokenId userErrors { message } }
+      }`,
+      { id }
+    );
+  } catch (err) {
+    // Fallback to REST delete
+    const numericId = String(id).includes("/") ? String(id).split("/").pop() : id;
+    await fetchAdminRest(shopDomain, `storefront_access_tokens/${numericId}.json`, { method: "DELETE" });
+  }
 }
 
-async function pruneOldTokens(admin: any, keep = 3) {
-  const tokens = await listTokens(admin);
+async function pruneOldTokens(admin: any, shopDomain: string, keep = 3) {
+  const tokens = await listTokens(admin, shopDomain);
   const sorted = tokens.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   const toDelete = sorted.slice(keep);
   for (const t of toDelete) {
-    await deleteToken(admin, t.id);
+    await deleteToken(admin, shopDomain, t.id);
   }
 }
 
@@ -40,21 +58,35 @@ export async function rotateStorefrontToken(shopDomain: string) {
   const shop = await db.shop.findUnique({ where: { domain: shopDomain }, include: { settings: true } });
   if (!shop) throw new Error("Shop not found");
   const { admin } = await getAdminClientByShop(shopDomain);
-  await pruneOldTokens(admin, 3);
-  const res = await admin.graphql(
-    `#graphql
-      mutation CreateStorefrontToken($input: StorefrontAccessTokenInput!) {
-        storefrontAccessTokenCreate(input: $input) {
-          storefrontAccessToken { accessToken accessScopes { handle } title createdAt }
-          userErrors { field message }
+  await pruneOldTokens(admin, shopDomain, 3);
+  let token: string | undefined;
+  try {
+    const json: any = await adminGraphqlJson(admin,
+      `#graphql
+        mutation CreateStorefrontToken($input: StorefrontAccessTokenInput!) {
+          storefrontAccessTokenCreate(input: $input) {
+            storefrontAccessToken { accessToken accessScopes { handle } title createdAt }
+            userErrors { field message }
+          }
         }
-      }
-    `,
-    { input: { title: `Sanity Tester ${new Date().toISOString()}` } },
-  );
-  const json = await res.json();
-  const token = json?.data?.storefrontAccessTokenCreate?.storefrontAccessToken?.accessToken as string | undefined;
-  if (!token) throw new Error("Failed to rotate Storefront token");
+      `,
+      { input: { title: `Sanity Tester ${new Date().toISOString()}` } },
+    );
+    token = json?.data?.storefrontAccessTokenCreate?.storefrontAccessToken?.accessToken as string | undefined;
+    const userErrors = json?.data?.storefrontAccessTokenCreate?.userErrors ?? [];
+    if (!token) throw new Error(`Failed to rotate Storefront token: ${userErrors.map((e: any) => e?.message).join('; ') || 'Unknown error'}`);
+  } catch (err) {
+    // Fallback to REST create
+    const res = await fetchAdminRest(shopDomain, 'storefront_access_tokens.json', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ storefront_access_token: { title: `Sanity Tester ${new Date().toISOString()}` } }),
+    });
+    const text = await res.text();
+    const json = JSON.parse(text || '{}');
+    token = json?.storefront_access_token?.access_token;
+    if (!token) throw err;
+  }
   await db.settings.update({ where: { shopId: shop.id }, data: { storefrontAccessToken: token, storefrontApiVersion: DEFAULT_STOREFRONT_VERSION } });
   return { token, version: DEFAULT_STOREFRONT_VERSION };
 }
@@ -69,34 +101,49 @@ export async function ensureStorefrontToken(shopDomain: string) {
 
   const { admin } = await getAdminClientByShop(shopDomain);
   // Try to reuse an existing token from the shop if present
-  const existing = await listTokens(admin);
+  const existing = await listTokens(admin, shopDomain);
   if (existing.length > 0) {
     const newest = existing.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0]!;
     await db.settings.update({ where: { shopId: shop.id }, data: { storefrontAccessToken: newest.accessToken, storefrontApiVersion: DEFAULT_STOREFRONT_VERSION } });
-    await pruneOldTokens(admin, 3);
+    await pruneOldTokens(admin, shopDomain, 3);
     return { token: newest.accessToken, version: DEFAULT_STOREFRONT_VERSION };
   }
 
   // Otherwise create a new one and prune older ones
-  await pruneOldTokens(admin, 3);
-  const res = await admin.graphql(
-    `#graphql
-      mutation CreateStorefrontToken($input: StorefrontAccessTokenInput!) {
-        storefrontAccessTokenCreate(input: $input) {
-          storefrontAccessToken { accessToken accessScopes { handle } title createdAt }
-          userErrors { field message }
+  await pruneOldTokens(admin, shopDomain, 3);
+  let token: string | undefined;
+  try {
+    const json: any = await adminGraphqlJson(admin,
+      `#graphql
+        mutation CreateStorefrontToken($input: StorefrontAccessTokenInput!) {
+          storefrontAccessTokenCreate(input: $input) {
+            storefrontAccessToken { accessToken accessScopes { handle } title createdAt }
+            userErrors { field message }
+          }
         }
-      }
-    `,
-    {
-      input: { title: `Sanity Tester ${new Date().toISOString()}` },
-    },
-  );
-  const json = await res.json();
-  const token = json?.data?.storefrontAccessTokenCreate?.storefrontAccessToken?.accessToken as string | undefined;
-  const userErrors = json?.data?.storefrontAccessTokenCreate?.userErrors ?? [];
-  if (!token) {
-    throw new Error(`Failed to create Storefront token: ${JSON.stringify(userErrors)}`);
+      `,
+      {
+        input: { title: `Sanity Tester ${new Date().toISOString()}` },
+      },
+    );
+    token = json?.data?.storefrontAccessTokenCreate?.storefrontAccessToken?.accessToken as string | undefined;
+    const userErrors = json?.data?.storefrontAccessTokenCreate?.userErrors ?? [];
+    if (!token) {
+      const topErrors = Array.isArray(userErrors) && userErrors.length ? userErrors.map((e: any) => e?.message).join("; ") : (json?.errors ? json.errors.map((e: any) => e?.message).join("; ") : "Unknown error");
+      throw new Error(`Failed to create Storefront token: ${topErrors}`);
+    }
+  } catch (err) {
+    console.log("failed to create storefront token", err);
+    // Fallback to REST create
+    const res = await fetchAdminRest(shopDomain, 'storefront_access_tokens.json', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ storefront_access_token: { title: `Sanity Tester ${new Date().toISOString()}` } }),
+    });
+    const text = await res.text();
+    const json = JSON.parse(text || '{}');
+    token = json?.storefront_access_token?.access_token;
+    if (!token) throw err;
   }
   await db.settings.update({ where: { shopId: shop.id }, data: { storefrontAccessToken: token, storefrontApiVersion: DEFAULT_STOREFRONT_VERSION } });
   return { token, version: DEFAULT_STOREFRONT_VERSION };

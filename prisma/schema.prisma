@@ -80,6 +80,13 @@ model Scenario {
   postalCode   String?
   provinceCode String?
   city         String?
+  // Optional personal/address fields for parity with checkout
+  firstName    String?
+  lastName     String?
+  company      String?
+  address1     String?
+  address2     String?
+  phone        String?
 
   // Cart
   productVariantIds String[] // gid://shopify/ProductVariant/... IDs
@@ -141,6 +148,7 @@ model Run {
   diagnostics   Json?
   notes         String?
   screenshotUrl String?
+  acknowledgedAt DateTime?
 
   createdAt DateTime @default(now())
 

@@ -19,7 +19,7 @@ import {
 import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
-import { enqueueScenarioRun } from "../models/job.server";
+import { enqueueScenarioRunBull } from "../services/queue-bull.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -84,7 +84,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   if (intent === "run_all") {
     const scenarios = await db.scenario.findMany({ where: { shopId: shop.id, active: true } });
     for (const s of scenarios) {
-      await enqueueScenarioRun(shop.id, s.id);
+      await enqueueScenarioRunBull(shop.id, s.id);
     }
     return json({ ok: true, enqueued: scenarios.length });
   }
