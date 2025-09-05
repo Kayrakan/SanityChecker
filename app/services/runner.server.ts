@@ -14,27 +14,29 @@ type DeliveryOption = { handle: string; title: string; estimatedCost: Money };
 
 function buildDiagnostics(groups: any[], options: DeliveryOption[] | null, subtotal?: Money | null, expectations?: any) {
   const diags: any[] = [];
-  const anyGroupEmpty = (groups ?? []).some((g: any) => (g.deliveryOptions ?? []).length === 0);
-  if (!options || options.length === 0 || anyGroupEmpty) {
-    diags.push({
-      code: "NO_RATES",
-      message: "No shipping options returned.",
-      probableCauses: [
-        "Destination not included in any shipping zone",
-        "Product weight missing or product not marked as physical",
-        "Market not active or shipping disabled",
-        "Mixed-profile cart without compatible merged rates",
-        "Carrier outage or timeout",
-      ],
-    });
+
+  function diagnoseNoRates() {
+    const anyGroupEmpty = (groups ?? []).some((g: any) => (g.deliveryOptions ?? []).length === 0);
+    if (!options || (options.length === 0) || anyGroupEmpty) {
+      diags.push({
+        code: "NO_RATES",
+        message: "No shipping options returned.",
+        probableCauses: [
+          "Destination not included in any shipping zone",
+          "Product weight missing or product not marked as physical",
+          "Market not active or shipping disabled",
+          "Mixed-profile cart without compatible merged rates",
+          "Carrier outage or timeout",
+        ],
+      });
+    }
   }
-  if (expectations?.freeShippingThreshold != null && options && options.length > 0) {
+
+  function diagnoseExpectationsFree() {
+    if (!(expectations?.freeShippingThreshold != null && options && options.length > 0)) return;
     const hasFree = options.some(o => Number(o.estimatedCost.amount) === 0);
     if (!hasFree) {
-      diags.push({
-        code: "FREE_SHIPPING_MISSING",
-        message: `Expected free shipping >= ${expectations.freeShippingThreshold}`,
-      });
+      diags.push({ code: "FREE_SHIPPING_MISSING", message: `Expected free shipping >= ${expectations.freeShippingThreshold}` });
     }
     if (subtotal) {
       const subtotalNum = Number(subtotal.amount);
@@ -46,7 +48,9 @@ function buildDiagnostics(groups: any[], options: DeliveryOption[] | null, subto
       diags.push({ code: "CURRENCY_MISMATCH", message: `Scenario currency ${expectations.currency} vs subtotal currency ${subtotal.currencyCode}` });
     }
   }
-  if (expectations?.min != null || expectations?.max != null) {
+
+  function diagnoseBounds() {
+    if (!(expectations?.min != null || expectations?.max != null)) return;
     const opts = (options ?? []);
     let targetOptions: DeliveryOption[] = opts;
     const target = (expectations?.boundsTarget || 'CHEAPEST') as string;
@@ -69,6 +73,10 @@ function buildDiagnostics(groups: any[], options: DeliveryOption[] | null, subto
       diags.push({ code: "PRICE_TOO_HIGH", message: `Target rate above ${expectations.max}` });
     }
   }
+
+  diagnoseNoRates();
+  diagnoseExpectationsFree();
+  diagnoseBounds();
   return diags;
 }
 
@@ -104,6 +112,14 @@ export async function runScenarioById(scenarioId: string, runId?: string) {
   }
 
   try {
+    function extractGroupsFromCart(cart: any): any[] {
+      const dg = cart?.deliveryGroups;
+      if (!dg) return [];
+      if (Array.isArray(dg)) return dg;
+      if (Array.isArray(dg.nodes)) return dg.nodes;
+      if (Array.isArray(dg.edges)) return (dg.edges as any[]).map((e: any) => e?.node).filter(Boolean);
+      return [];
+    }
     // Ensure a Storefront token exists (provision via Admin API if needed)
     console.log("ensuring storefront token", shop.domain);
     const ensured = await ensureStorefrontToken(shop.domain);
@@ -112,6 +128,12 @@ export async function runScenarioById(scenarioId: string, runId?: string) {
     console.log("storefront token", token);
     let version = ensured.version;
     let client = await unauthenticatedStorefrontClient(shop.domain, token, version);
+    // Preflight: resolve variant infos to confirm visibility and shippability
+    let preflightVariantInfos: any[] = [];
+    try {
+      preflightVariantInfos = await fetchVariantInfos(shop.domain, Array.isArray(scenario.productVariantIds) ? scenario.productVariantIds : []);
+    } catch {}
+    console.log("client", client);
     const cartCreateRes = await client.graphql(
       `#graphql
       mutation CreateCart($lines: [CartLineInput!]!, $buyerIdentity: CartBuyerIdentityInput) {
@@ -120,17 +142,25 @@ export async function runScenarioById(scenarioId: string, runId?: string) {
       `,
       { lines, buyerIdentity: { countryCode: scenario.countryCode } }
     );
+    console.log("cartCreateRes", cartCreateRes);
     const cartCreateJson = await cartCreateRes.json();
+    console.log("cartCreateJson", cartCreateJson);
     const cartId = cartCreateJson?.data?.cartCreate?.cart?.id;
     if (!cartId) throw new Error("Cart creation failed");
+    console.log("cartId", cartId);
 
     // Set buyer identity address
     // Resolve city/province dynamically when missing using postal-code lookup (best-effort, country-agnostic)
     let derivedCity: string | undefined = scenario.city ?? undefined;
     let derivedProvinceCode: string | undefined = scenario.provinceCode ?? undefined;
+    console.log("derivedCity", derivedCity);
+    console.log("derivedProvinceCode", derivedProvinceCode);
     try {
+      console.log("looking up city/province", scenario.countryCode, scenario.postalCode);
       if (scenario.countryCode && scenario.postalCode && (!derivedCity || !derivedProvinceCode)) {
+        console.log("looking up city/province2", scenario.countryCode, scenario.postalCode);
         const looked = await lookupCityProvince(String(scenario.countryCode), String(scenario.postalCode));
+        console.log("looked", looked);
         if (!derivedCity && looked.city) derivedCity = looked.city;
         if (!derivedProvinceCode && looked.provinceCode) derivedProvinceCode = looked.provinceCode;
       }
@@ -138,10 +168,12 @@ export async function runScenarioById(scenarioId: string, runId?: string) {
     // Normalize province to Shopify subdivision code when possible (helps countries like TR)
     try {
       if (scenario.countryCode) {
+        console.log("listing provinces", scenario.countryCode);
         const provinces = await listShopifyProvinces(shop.domain, scenario.countryCode).catch(() => []);
         const norm = (s: string | undefined) => String(s || '').trim().toLowerCase();
         const targetName = norm(derivedProvinceCode) || norm(derivedCity);
         if (!derivedProvinceCode && targetName && Array.isArray(provinces) && provinces.length > 0) {
+          console.log("listing provinces2", scenario.countryCode);
           const exact = provinces.find((p: any) => norm(p.name) === targetName || norm(p.code) === targetName || norm(p.code).endsWith(`-${targetName}`));
           const loose = exact || provinces.find((p: any) => norm(p.name).includes(targetName));
           if (loose?.code) {
@@ -153,6 +185,7 @@ export async function runScenarioById(scenarioId: string, runId?: string) {
     // Choose address1 from scenario if provided; otherwise synthesize
     const districtValue = String(((scenario as any)?.expectations?.district ?? "")).trim();
     const address1 = String((scenario as any)?.address1 || '').trim() || [districtValue, String(scenario.city || "").trim()].filter(Boolean).join(", ") || "Sanity Test Address";
+    console.log("address1", address1);
     let identityRes = await client.graphql(
       `#graphql
       mutation CartBuyerIdentityUpdate($cartId: ID!, $buyerIdentity: CartBuyerIdentityInput!) {
@@ -169,9 +202,9 @@ export async function runScenarioById(scenarioId: string, runId?: string) {
           deliveryAddressPreferences: [
             {
               deliveryAddress: {
-                countryCode: scenario.countryCode,
-                postalCode: scenario.postalCode ?? undefined,
-                provinceCode: derivedProvinceCode,
+                country: scenario.countryCode, // Storefront MailingAddressInput uses 'country' not 'countryCode'
+                zip: scenario.postalCode ?? undefined, // 'zip' not 'postalCode'
+                province: derivedProvinceCode || derivedCity || undefined, // Storefront uses 'province' string
                 city: derivedCity,
                 address1,
                 address2: String((scenario as any)?.address2 || '') || undefined,
@@ -185,16 +218,22 @@ export async function runScenarioById(scenarioId: string, runId?: string) {
         },
       }
     );
+    console.log("identityRes", identityRes);
     let identityJson = await identityRes.json();
+    console.log("identityJson", identityJson);
     const userErrors = identityJson?.data?.cartBuyerIdentityUpdate?.userErrors ?? [];
-    if (userErrors.length > 0) {
+    console.log("userErrors", userErrors);
+    if (userErrors.length > 0) {  
+      console.log("userErrors2", userErrors);
       // Retry with harmless default personal fields if demanded by API/shop settings
       const needsRetry = Array.isArray(userErrors) && userErrors.some((e: any) => {
+        console.log("needsRetry", e);
         const fieldPath = (e?.field || []).join('.') as string;
         const msg = String(e?.message || '').toLowerCase();
         return fieldPath.includes('firstName') || fieldPath.includes('lastName') || fieldPath.includes('phone') || msg.includes('first name') || msg.includes('last name') || msg.includes('phone');
       });
       if (needsRetry) {
+        console.log("needsRetry2", needsRetry);
         identityRes = await client.graphql(
           `#graphql
           mutation CartBuyerIdentityUpdate($cartId: ID!, $buyerIdentity: CartBuyerIdentityInput!) {
@@ -211,9 +250,9 @@ export async function runScenarioById(scenarioId: string, runId?: string) {
               deliveryAddressPreferences: [
                 {
                   deliveryAddress: {
-                    countryCode: scenario.countryCode,
-                    postalCode: scenario.postalCode ?? undefined,
-                    provinceCode: derivedProvinceCode,
+                    country: scenario.countryCode,
+                    zip: scenario.postalCode ?? undefined,
+                    province: derivedProvinceCode || derivedCity || undefined,
                     city: derivedCity,
                     address1,
                     firstName: 'Test',
@@ -226,17 +265,21 @@ export async function runScenarioById(scenarioId: string, runId?: string) {
             },
           }
         );
+        console.log("identityRes2", identityRes);
         identityJson = await identityRes.json();
+        console.log("identityJson2", identityJson);
       }
     }
     const retryErrors = identityJson?.data?.cartBuyerIdentityUpdate?.userErrors ?? [];
     if (retryErrors.length > 0) {
       throw new Error(`Buyer identity error: ${JSON.stringify(retryErrors)}`);
     }
+    console.log("identityJson3", identityJson);
 
     // Query delivery options
     // Apply discount code if provided
     if (scenario.discountCode) {
+      console.log("applying discount code", scenario.discountCode);
       await client.graphql(
         `#graphql
         mutation CartDiscountCodesUpdate($cartId: ID!, $codes: [String!]!) {
@@ -253,28 +296,25 @@ export async function runScenarioById(scenarioId: string, runId?: string) {
     // small retry helper since carrier aggregators may respond slightly after address set
     async function fetchDeliveryOptionsOnce(cl: any) {
       return await cl.graphql(
-      `#graphql
-      query CartDeliveryOptions($cartId: ID!) {
-        cart(id: $cartId) {
-          id
-          cost { subtotalAmount { amount currencyCode } }
-          deliveryGroups {
+        `#graphql
+        query CartDeliveryOptions($cartId: ID!) {
+          cart(id: $cartId) {
             id
-            deliveryOptions {
-              handle
-              title
-              estimatedCost { amount currencyCode }
-            }
+            cost { subtotalAmount { amount currencyCode } }
+            deliveryGroups(first: 10) { nodes { id deliveryOptions { handle title estimatedCost { amount currencyCode } } } }
           }
         }
-      }
-      `,
-      { cartId }
-    );
+        `,
+        { cartId }
+      );
     }
+    console.log("fetching delivery options");
     const queryRes = await fetchDeliveryOptionsOnce(client);
+    console.log("queryRes", queryRes);
     const queryJson = await queryRes.json();
+    console.log("queryJson", queryJson);
     if (queryRes.status === 403) {
+      console.log("403");
       // Token likely revoked; rotate and retry once
       const rotated = await rotateStorefrontToken(shop.domain);
       token = rotated.token;
@@ -286,14 +326,14 @@ export async function runScenarioById(scenarioId: string, runId?: string) {
           cart(id: $cartId) {
             id
             cost { subtotalAmount { amount currencyCode } }
-            deliveryGroups { id deliveryOptions { handle title estimatedCost { amount currencyCode } } }
+            deliveryGroups(first: 10) { nodes { id deliveryOptions { handle title estimatedCost { amount currencyCode } } } }
           }
         }`,
         { cartId }
       );
       const retryJson = await retryRes.json();
       if (!retryRes.ok) throw new Error(`Storefront query failed after rotation: ${retryRes.status}`);
-      const groups = retryJson?.data?.cart?.deliveryGroups ?? [];
+      const groups = extractGroupsFromCart(retryJson?.data?.cart);
       const subtotal: Money | null = retryJson?.data?.cart?.cost?.subtotalAmount ?? null;
       const options: DeliveryOption[] = groups.flatMap((g: any) => g.deliveryOptions ?? []);
       const diagnostics = buildDiagnostics(groups, options, subtotal, scenario.expectations as any);
@@ -302,17 +342,22 @@ export async function runScenarioById(scenarioId: string, runId?: string) {
       await completeRun(run.id, status, { groups, options, subtotal }, diagnostics);
       return await db.run.findUnique({ where: { id: run.id } });
     }
-    let groups = queryJson?.data?.cart?.deliveryGroups ?? [];
+    let groups = extractGroupsFromCart(queryJson?.data?.cart);
     let subtotal: Money | null = queryJson?.data?.cart?.cost?.subtotalAmount ?? null;
     let options: DeliveryOption[] = groups.flatMap((g: any) => g.deliveryOptions ?? []);
+    console.log("groupsLen", Array.isArray(groups) ? groups.length : 0, "optionsLen", options.length);
 
     // Brief retry (2x) if first fetch returns empty; some carriers are eventually consistent after identity update
     if ((!options || options.length === 0) && queryRes.ok) {
+      console.log("2x retry");
       for (let i = 0; i < 2; i++) {
         await new Promise(r => setTimeout(r, 400));
         const r2 = await fetchDeliveryOptionsOnce(client);
         const j2 = await r2.json();
-        groups = j2?.data?.cart?.deliveryGroups ?? groups;
+        const groups2 = extractGroupsFromCart(j2?.data?.cart);
+        if (groups2.length > 0) {
+          groups = groups2;
+        }
         subtotal = j2?.data?.cart?.cost?.subtotalAmount ?? subtotal;
         options = groups.flatMap((g: any) => g.deliveryOptions ?? []);
         if (options && options.length > 0) break;
@@ -320,15 +365,23 @@ export async function runScenarioById(scenarioId: string, runId?: string) {
     }
 
     const diagnostics = buildDiagnostics(groups, options, subtotal, scenario.expectations as any);
+    console.log("diagnostics", diagnostics);
     // Enrich diagnostics when no rates were returned
     if (!options || options.length === 0) {
+      console.log("no options");
       try {
+        console.log("fetching market enabled, variant infos, country req");
         const [marketEnabled, variantInfos, countryReq] = await Promise.all([
           isCountryEnabledInMarkets(shop.domain, scenario.countryCode).catch(() => undefined),
           fetchVariantInfos(shop.domain, Array.isArray(scenario.productVariantIds) ? scenario.productVariantIds : []).catch(() => []),
           getShopifyCountryRequirements(shop.domain, scenario.countryCode).catch(() => undefined),
         ]);
-
+        console.log("marketEnabled", marketEnabled);
+        console.log("variantInfos", variantInfos);
+        console.log("countryReq", countryReq);
+        if ((preflightVariantInfos.length === 0) && (variantInfos.length === 0)) {
+          diagnostics.push({ code: "VARIANTS_UNAVAILABLE", message: "Selected variants are not visible to Storefront. Ensure products are published to the Online Store and IDs are valid." });
+        }
         if (marketEnabled === false) {
           diagnostics.push({ code: "MARKET_DISABLED", message: `${String(scenario.countryCode).toUpperCase()} is not enabled in Shopify Markets` });
         }
@@ -359,10 +412,13 @@ export async function runScenarioById(scenarioId: string, runId?: string) {
             city: derivedCity ?? null,
             address1,
             linesCount: Array.isArray(lines) ? lines.length : 0,
-            variants: (variantInfos || []).map(v => ({ id: v.id, requiresShipping: v.requiresShipping, grams: v.grams })),
+            variants: ((preflightVariantInfos.length > 0 ? preflightVariantInfos : variantInfos) || []).map(v => ({ id: v.id, requiresShipping: v.requiresShipping, grams: v.grams })),
           }
         });
-      } catch {}
+        console.log("diagnostics2", diagnostics);
+      } catch {
+        console.log("error diagnostics");
+      }
     }
     if (diagnostics.length > 0) {
       const links = buildAdminLinks(shop.domain, {});
@@ -378,8 +434,10 @@ export async function runScenarioById(scenarioId: string, runId?: string) {
     }
 
     await completeRun(run.id, status, { groups, options, subtotal }, diagnostics);
+    console.log("completeRun last", status);
     return await db.run.findUnique({ where: { id: run.id } });
   } catch (err: any) {
+    console.log("error completeRun last", err);
     const message = String(err?.message || 'Unknown error');
     const isTokenIssue = message.includes('Storefront token') || message.includes('Offline admin session') || message.includes('storefrontAccessToken');
     if (isTokenIssue) {
