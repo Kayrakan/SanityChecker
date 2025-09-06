@@ -8,6 +8,8 @@ import { getShopifyCountryRequirements } from "./countries.server";
 import { isCountryEnabledInMarkets } from "./markets.server";
 import { fetchVariantInfos } from "./variants.server";
 import { listShopifyProvinces } from "./countries.server";
+import { captureCheckoutScreenshot } from "./screenshot.server";
+import { r2PutObject, buildScreenshotKey } from "./r2.server";
 
 type Money = { amount: string; currencyCode: string };
 type DeliveryOption = { handle: string; title: string; estimatedCost: Money };
@@ -300,6 +302,7 @@ export async function runScenarioById(scenarioId: string, runId?: string) {
         query CartDeliveryOptions($cartId: ID!) {
           cart(id: $cartId) {
             id
+            checkoutUrl
             cost { subtotalAmount { amount currencyCode } }
             deliveryGroups(first: 10) { nodes { id deliveryOptions { handle title estimatedCost { amount currencyCode } } } }
           }
@@ -313,6 +316,7 @@ export async function runScenarioById(scenarioId: string, runId?: string) {
     console.log("queryRes", queryRes);
     const queryJson = await queryRes.json();
     console.log("queryJson", queryJson);
+    let checkoutUrl: string | undefined = queryJson?.data?.cart?.checkoutUrl;
     if (queryRes.status === 403) {
       console.log("403");
       // Token likely revoked; rotate and retry once
@@ -325,6 +329,7 @@ export async function runScenarioById(scenarioId: string, runId?: string) {
         query CartDeliveryOptions($cartId: ID!) {
           cart(id: $cartId) {
             id
+            checkoutUrl
             cost { subtotalAmount { amount currencyCode } }
             deliveryGroups(first: 10) { nodes { id deliveryOptions { handle title estimatedCost { amount currencyCode } } } }
           }
@@ -339,7 +344,31 @@ export async function runScenarioById(scenarioId: string, runId?: string) {
       const diagnostics = buildDiagnostics(groups, options, subtotal, scenario.expectations as any);
       diagnostics.push({ code: "TOKEN_ROTATED", message: "Storefront token was rotated due to 403" });
       const status = (!options || options.length === 0) ? "FAIL" : (diagnostics.length > 0 ? "WARN" : "PASS");
-      await completeRun(run.id, status, { groups, options, subtotal }, diagnostics);
+      let screenshotUrl: string | undefined;
+      const captureMode = String(process.env.SCREENSHOT_CAPTURE_MODE || 'warn_fail_only').toLowerCase();
+      const shouldCaptureRetry = scenario.screenshotEnabled && (
+        captureMode === 'all' ||
+        (captureMode === 'warn_fail_only' && (status === 'WARN' || status === 'FAIL')) ||
+        (captureMode === 'fail_only' && status === 'FAIL')
+      );
+      if (shouldCaptureRetry) {
+        try {
+          const co = retryJson?.data?.cart?.checkoutUrl as string | undefined;
+          if (co) {
+            const buf = await captureCheckoutScreenshot(co, { storefrontPassword: process.env.STOREFRONT_PASSWORD }).catch(() => null);
+            if (buf) {
+              const key = buildScreenshotKey(scenario.shopId, run.id);
+              const uploaded = await r2PutObject({ key, contentType: "image/png", body: buf });
+              screenshotUrl = uploaded.url;
+            }
+          } else {
+            diagnostics.push({ code: "SCREENSHOT_SKIPPED", message: "checkoutUrl not available" });
+          }
+        } catch (e: any) {
+          diagnostics.push({ code: "SCREENSHOT_ERROR", message: String(e?.message || e) });
+        }
+      }
+      await completeRun(run.id, status, { groups, options, subtotal }, diagnostics, undefined, screenshotUrl);
       return await db.run.findUnique({ where: { id: run.id } });
     }
     let groups = extractGroupsFromCart(queryJson?.data?.cart);
@@ -433,7 +462,31 @@ export async function runScenarioById(scenarioId: string, runId?: string) {
       status = "PASS";
     }
 
-    await completeRun(run.id, status, { groups, options, subtotal }, diagnostics);
+    let screenshotUrlFinal: string | undefined;
+    const captureMode = String(process.env.SCREENSHOT_CAPTURE_MODE || 'warn_fail_only').toLowerCase();
+    const shouldCapture = scenario.screenshotEnabled && (
+      captureMode === 'all' ||
+      (captureMode === 'warn_fail_only' && (status === 'WARN' || status === 'FAIL')) ||
+      (captureMode === 'fail_only' && status === 'FAIL')
+    );
+    if (shouldCapture) {
+      try {
+        const co = checkoutUrl as string | undefined;
+        if (co) {
+          const buf = await captureCheckoutScreenshot(co, { storefrontPassword: process.env.STOREFRONT_PASSWORD }).catch(() => null);
+          if (buf) {
+            const key = buildScreenshotKey(scenario.shopId, run.id);
+            const uploaded = await r2PutObject({ key, contentType: "image/png", body: buf });
+            screenshotUrlFinal = uploaded.url;
+          }
+        } else {
+          diagnostics.push({ code: "SCREENSHOT_SKIPPED", message: "checkoutUrl not available" });
+        }
+      } catch (e: any) {
+        diagnostics.push({ code: "SCREENSHOT_ERROR", message: String(e?.message || e) });
+      }
+    }
+    await completeRun(run.id, status, { groups, options, subtotal }, diagnostics, undefined, screenshotUrlFinal);
     console.log("completeRun last", status);
     return await db.run.findUnique({ where: { id: run.id } });
   } catch (err: any) {

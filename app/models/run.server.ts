@@ -9,7 +9,7 @@ export async function createRun(scenarioId: string, shopId: string) {
   });
 }
 
-export async function completeRun(id: string, status: string, result?: any, diagnostics?: any, notes?: string) {
+export async function completeRun(id: string, status: string, result?: any, diagnostics?: any, notes?: string, screenshotUrl?: string) {
   return prisma.run.update({
     where: { id },
     data: {
@@ -18,6 +18,7 @@ export async function completeRun(id: string, status: string, result?: any, diag
       result: result ?? undefined,
       diagnostics: diagnostics ?? undefined,
       notes,
+      screenshotUrl: screenshotUrl ?? undefined,
     },
   });
 }

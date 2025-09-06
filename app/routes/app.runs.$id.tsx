@@ -116,6 +116,15 @@ export default function RunDetail() {
           />
         </Card>
 
+        {run?.screenshotUrl ? (
+          <Card>
+            <Text as="h3" variant="headingMd">Screenshot</Text>
+            <Box padding="400" background="bg-surface-active" borderWidth="025" borderRadius="200" borderColor="border">
+              <img src={String(run.screenshotUrl)} alt="Checkout screenshot" style={{ maxWidth: '100%', height: 'auto', display: 'block' }} />
+            </Box>
+          </Card>
+        ) : null}
+
         <Card>
           <Text as="h3" variant="headingMd">Why this was flagged</Text>
           <BlockStack gap="150">

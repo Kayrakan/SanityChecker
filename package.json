@@ -19,7 +19,8 @@
     "vite": "vite",
     "worker": "tsx worker/bull.worker.ts",
     "redis:up": "docker compose up -d redis",
-    "redis:down": "docker compose down"
+    "redis:down": "docker compose down",
+    "postinstall": "playwright install chromium"
   },
   "type": "module",
   "engines": {
@@ -42,7 +43,10 @@
     "prisma": "^6.2.1",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "vite-tsconfig-paths": "^5.0.1"
+    "vite-tsconfig-paths": "^5.0.1",
+    "@aws-sdk/client-s3": "^3.744.0",
+    "@aws-sdk/lib-storage": "^3.744.0",
+    "playwright": "^1.48.2"
   },
   "devDependencies": {
     "@bull-board/api": "^6.12.7",
