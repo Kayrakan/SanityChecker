@@ -2,7 +2,7 @@ import type { LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
 import { useLoaderData, Link as RemixLink, useRevalidator, Form, useSearchParams } from "@remix-run/react";
 import { useEffect, useMemo } from "react";
-import { Page, Card, IndexTable, Text, Badge, Button, Select, InlineStack, BlockStack } from "@shopify/polaris";
+import { Page, Card, IndexTable, Text, Badge, Button, Select, InlineStack, BlockStack, Spinner } from "@shopify/polaris";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 
@@ -43,12 +43,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     scenarios = await prisma.scenario.findMany({ where: { shopId: shop.id }, orderBy: { name: "asc" } });
     // Summary in last 24h regardless of filters (quick triage)
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
-    const recent = await prisma.run.findMany({ where: { shopId: shop.id, createdAt: { gte: since } } });
-    summary = {
-      pass: recent.filter((r: any) => r.status === "PASS").length,
-      warn: recent.filter((r: any) => r.status === "WARN").length,
-      fail: recent.filter((r: any) => r.status === "FAIL" || r.status === "ERROR").length,
-    };
+    const [passCount, warnCount, failErrCount] = await Promise.all([
+      prisma.run.count({ where: { shopId: shop.id, createdAt: { gte: since }, status: "PASS" } }),
+      prisma.run.count({ where: { shopId: shop.id, createdAt: { gte: since }, status: "WARN" } }),
+      prisma.run.count({ where: { shopId: shop.id, createdAt: { gte: since }, status: { in: ["FAIL", "ERROR"] } } as any }),
+    ]);
+    summary = { pass: passCount, warn: warnCount, fail: failErrCount };
   }
   return json({ runs, filters: { status, from, to, scenarioId }, scenarios, summary });
 };
@@ -62,13 +62,17 @@ export default function RunsIndex() {
       if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
         revalidator.revalidate();
       }
-    }, 3000);
+    }, 10000);
     return () => clearInterval(id);
   }, [revalidator]);
   const csvUrl = useMemo(() => {
     const q = new URLSearchParams(searchParams);
     q.set('limit', '500');
     q.set('format', 'csv');
+    return `/api/runs?${q.toString()}`;
+  }, [searchParams]);
+  const deleteAllAction = useMemo(() => {
+    const q = new URLSearchParams(searchParams);
     return `/api/runs?${q.toString()}`;
   }, [searchParams]);
   return (
@@ -82,11 +86,16 @@ export default function RunsIndex() {
               <Badge tone="success">{`Pass ${summary.pass}`}</Badge>
             </InlineStack>
             <InlineStack gap="200">
+              {revalidator.state !== 'idle' && <InlineStack gap="100" blockAlign="center"><Spinner size="small" /><Text as="span" variant="bodySm" tone="subdued">Refreshing…</Text></InlineStack>}
               <Form method="post" action="/app">
                 <input type="hidden" name="intent" value="run_all" />
                 <Button submit>Run all active</Button>
               </Form>
               <Button url={csvUrl} variant="secondary">Export CSV</Button>
+              <Form method="post" action={deleteAllAction} onSubmit={(e) => { if (!confirm('Delete all listed runs? This cannot be undone.')) e.preventDefault(); }}>
+                <input type="hidden" name="intent" value="delete_all" />
+                <Button submit tone="critical" variant="secondary">Delete all</Button>
+              </Form>
             </InlineStack>
           </InlineStack>
         </Card>

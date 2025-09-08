@@ -1,5 +1,5 @@
-import type { LoaderFunctionArgs } from "@remix-run/node";
-import { json } from "@remix-run/node";
+import type { LoaderFunctionArgs, ActionFunctionArgs } from "@remix-run/node";
+import { json, redirect } from "@remix-run/node";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 
@@ -58,6 +58,44 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     return new Response(text, { headers: { 'Content-Type': 'text/csv' } });
   }
   return json({ runs });
+};
+
+export const action = async ({ request }: ActionFunctionArgs) => {
+  const { session } = await authenticate.admin(request);
+  const url = new URL(request.url);
+  const status = String(url.searchParams.get("status") || "").toUpperCase();
+  const from = url.searchParams.get("from");
+  const to = url.searchParams.get("to");
+  const scenarioId = url.searchParams.get("scenarioId");
+
+  const form = await request.formData();
+  const intent = String(form.get("intent") || "");
+  if (intent !== "delete_all") {
+    return json({ ok: true });
+  }
+
+  const shop = await prisma.shop.findUnique({ where: { domain: session.shop } });
+  if (!shop) return new Response("Forbidden", { status: 403 });
+
+  const where: any = { shopId: shop.id };
+  if (status && ["PENDING","PASS","WARN","FAIL","ERROR","BLOCKED"].includes(status)) where.status = status as any;
+  if (scenarioId) where.scenarioId = scenarioId;
+  if (from || to) {
+    const createdAt: any = {};
+    if (from) createdAt.gte = new Date(from);
+    if (to) createdAt.lte = new Date(`${to}T23:59:59.999Z`);
+    where.createdAt = createdAt;
+  }
+
+  await prisma.run.deleteMany({ where });
+
+  const q = new URLSearchParams();
+  if (status) q.set("status", status);
+  if (from) q.set("from", from);
+  if (to) q.set("to", to);
+  if (scenarioId) q.set("scenarioId", scenarioId);
+  const qs = q.toString();
+  return redirect(`/app/runs${qs ? `?${qs}` : ""}`);
 };
 
 

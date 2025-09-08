@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
 import { Form, Link as RemixLink, useFetcher, useLoaderData } from "@remix-run/react";
@@ -33,10 +33,21 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   });
 
   const since7d = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-  const [totalScenarios, activeScenarios, runs7d, lastRuns] = await Promise.all([
+  const [
+    totalScenarios,
+    activeScenarios,
+    totalRuns7d,
+    pass,
+    warn,
+    fail,
+    lastRuns,
+  ] = await Promise.all([
     db.scenario.count({ where: { shopId: shop.id } }),
     db.scenario.count({ where: { shopId: shop.id, active: true } }),
-    db.run.findMany({ where: { shopId: shop.id, createdAt: { gte: since7d } } }),
+    db.run.count({ where: { shopId: shop.id, createdAt: { gte: since7d } } }),
+    db.run.count({ where: { shopId: shop.id, createdAt: { gte: since7d }, status: "PASS" } }),
+    db.run.count({ where: { shopId: shop.id, createdAt: { gte: since7d }, status: "WARN" } }),
+    db.run.count({ where: { shopId: shop.id, createdAt: { gte: since7d }, status: { in: ["FAIL", "ERROR"] } } as any }),
     db.run.findMany({
       where: { shopId: shop.id },
       orderBy: { createdAt: "desc" },
@@ -45,10 +56,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     }),
   ]);
 
-  const pass = runs7d.filter((r: any) => r.status === "PASS").length;
-  const warn = runs7d.filter((r: any) => r.status === "WARN").length;
-  const fail = runs7d.filter((r: any) => r.status === "FAIL" || r.status === "ERROR").length;
-  const totalRuns = runs7d.length || 1;
+  const totalRuns = totalRuns7d || 1;
   const passRate = Math.round((pass / totalRuns) * 100);
 
   const schedule = shop.settings?.promoMode
@@ -95,11 +103,14 @@ export default function Index() {
   const fetcher = useFetcher();
   const { metrics, lastRuns, schedule } = useLoaderData<typeof loader>();
   const shopify = useAppBridge();
+  const [enqueued, setEnqueued] = useState<number | null>(null);
 
   useEffect(() => {
     const data: any = fetcher.data as any;
     if (fetcher.state === "idle" && data?.enqueued != null) {
       shopify.toast.show(`Enqueued ${data.enqueued} scenarios`);
+      setEnqueued(Number(data.enqueued) || 0);
+      try { window.scrollTo({ top: 0, behavior: 'smooth' }); } catch {}
     }
   }, [fetcher.state, fetcher.data, shopify]);
 
@@ -110,6 +121,16 @@ export default function Index() {
       <TitleBar title="Shipping Sanity Tester" />
 
       <BlockStack gap="500">
+        {enqueued != null ? (
+          <Banner
+            title="Runs enqueued"
+            tone="success"
+            onDismiss={() => setEnqueued(null)}
+            action={{ content: 'Open Runs', url: '/app/runs' }}
+          >
+            <p>{`Queued ${enqueued} scenario${enqueued === 1 ? '' : 's'}. You can monitor progress on the Runs page.`}</p>
+          </Banner>
+        ) : null}
         {/* Storefront token is provisioned automatically when needed */}
 
         <Layout>

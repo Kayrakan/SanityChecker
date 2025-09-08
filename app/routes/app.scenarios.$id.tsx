@@ -2,7 +2,7 @@ import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { json, redirect } from "@remix-run/node";
 import { Form, useLoaderData, useFetcher, Outlet, useLocation } from "@remix-run/react";
 import { useNavigate } from "@remix-run/react";
-import { Page, Card, TextField, Button, BlockStack, InlineStack, Checkbox, Text, Select, InlineError, Modal } from "@shopify/polaris";
+import { Page, Card, TextField, Button, BlockStack, InlineStack, Checkbox, Text, Select, InlineError, Modal, Spinner } from "@shopify/polaris";
 import { useEffect, useMemo, useState } from "react";
 import { authenticate } from "../shopify.server";
 import { listShopifyCountries, listShopifyProvinces } from "../services/countries.server";
@@ -145,41 +145,53 @@ export default function ScenarioDetail() {
   // Dynamic country metadata fetched via internal endpoint
 
   const [countryMeta, setCountryMeta] = useState<any | null>(null);
+  const [countryLoadingCount, setCountryLoadingCount] = useState<number>(0);
+  const countryLoading = countryLoadingCount > 0;
   useEffect(() => {
-    (async () => {
-      if (!countryCode) return;
+    if (!countryCode) return;
+    const controller = new AbortController();
+    const debounce = setTimeout(async () => {
+      setCountryLoadingCount((c) => c + 1);
       try {
-        const res = await fetch(`/internal/country-meta?countryCode=${encodeURIComponent(countryCode)}`);
+        const res = await fetch(`/internal/country-meta?countryCode=${encodeURIComponent(countryCode)}`, { signal: controller.signal });
         const json = await res.json();
         setCountryMeta(json || null);
-      } catch {
+      } catch (e: any) {
+        if (e?.name === 'AbortError') return;
         setCountryMeta(null);
+      } finally {
+        setCountryLoadingCount((c) => Math.max(0, c - 1));
       }
-    })();
+    }, 150);
+    return () => { clearTimeout(debounce); controller.abort(); };
   }, [countryCode]);
 
   useEffect(() => {
     // Fetch market info and provinces when country changes
-    (async () => {
-      if (!countryCode) return;
+    if (!countryCode) return;
+    const ctrlMarket = new AbortController();
+    const ctrlProv = new AbortController();
+    const debounce = setTimeout(async () => {
+      setCountryLoadingCount((c) => c + 1);
       try {
-        console.log('fetching market info');
         const [marketRes, provRes] = await Promise.all([
-          fetch(`/internal/market-info?countryCode=${encodeURIComponent(countryCode)}`),
-          fetch(`/internal/provinces?countryCode=${encodeURIComponent(countryCode)}`),
+          fetch(`/internal/market-info?countryCode=${encodeURIComponent(countryCode)}`, { signal: ctrlMarket.signal }),
+          fetch(`/internal/provinces?countryCode=${encodeURIComponent(countryCode)}`, { signal: ctrlProv.signal }),
         ]);
         const marketData = await marketRes.json();
         setMarketCurrency(marketData?.currency);
         setMarketEnabledState(!!marketData?.enabled);
-        console.log('marketData');
-        console.log(marketData);
         setMarketsUrl(marketData?.marketsUrl);
         const provData = await provRes.json();
         setProvinceOptions(Array.isArray(provData?.provinces) ? provData.provinces : []);
-      } catch {
+      } catch (e: any) {
+        if (e?.name === 'AbortError') return;
         setProvinceOptions([]);
+      } finally {
+        setCountryLoadingCount((c) => Math.max(0, c - 1));
       }
-    })();
+    }, 150);
+    return () => { clearTimeout(debounce); ctrlMarket.abort(); ctrlProv.abort(); };
   }, [countryCode]);
 
   const [lookupProvince, setLookupProvince] = useState<string | undefined>(undefined);
@@ -250,6 +262,14 @@ export default function ScenarioDetail() {
   }, [variants, scenario.productVariantIds, scenario.quantities]);
   return (
     <Page title="Scenario">
+      {(countryLoading || loading) && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(255,255,255,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 999 }} aria-busy>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, padding: 24, borderRadius: 8, background: 'rgba(255,255,255,0.9)', boxShadow: '0 2px 12px rgba(0,0,0,0.08)' }}>
+            <Spinner accessibilityLabel="Updating scenario" size="large" />
+            <Text as="span" variant="bodySm" tone="subdued">Updating…</Text>
+          </div>
+        </div>
+      )}
       {showModal ? (
         <Modal
           open

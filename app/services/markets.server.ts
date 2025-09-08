@@ -24,30 +24,16 @@ export async function getMarketCurrencyByCountry(shopDomain: string, countryCode
 }
 
 export async function isCountryEnabledInMarkets(shopDomain: string, countryCode: string): Promise<boolean> {
-  console.log('isCountryEnabledInMarkets');
   const { admin } = await getAdminClientByShop(shopDomain);
   try {
+    const needle = String(countryCode || '').toUpperCase();
     const json = await adminGraphqlJson<any>(admin, `
       #graphql
-      query MarketsAll {
-        markets(first: 50) {
-          nodes {
-            id
-            regions(first: 250) {
-              nodes {
-                __typename
-                ... on MarketRegionCountry { code }
-              }
-            }
-          }
-        }
+      query MarketByGeo($country: CountryCode!) {
+        marketByGeography(countryCode: $country) { id }
       }
-    `, {});
-    const markets: any[] = json?.data?.markets?.nodes ?? [];
-    const needle = String(countryCode || '').toUpperCase();
-    return markets.some((m: any) => ((m.regions?.nodes ?? []) as any[])
-      .some((r: any) => String(r?.code || '').toUpperCase() === needle)
-    );
+    `, { country: needle });
+    return !!json?.data?.marketByGeography?.id;
   } catch (err: any) {
     console.error('isCountryEnabledInMarkets error', err?.message || err);
     return false;
@@ -77,31 +63,15 @@ export async function getMarketCurrencyByCountryForAdmin(admin: { graphql: (q: s
 }
 
 export async function isCountryEnabledInMarketsForAdmin(admin: { graphql: (q: string, v?: any) => Promise<Response> }, countryCode: string): Promise<boolean> {
-  console.log('isCountryEnabledInMarketsForAdmin');
   try {
+    const needle = String(countryCode || '').toUpperCase();
     const json = await adminGraphqlJson<any>(admin as any, `
       #graphql
-      query MarketsAll {
-        markets(first: 50) {
-          nodes {
-            id
-            regions(first: 250) {
-              nodes {
-                __typename
-                ... on MarketRegionCountry { code }
-              }
-            }
-          }
-        }
+      query MarketByGeo($country: CountryCode!) {
+        marketByGeography(countryCode: $country) { id }
       }
-    `, {});
-
-    const markets: any[] = json?.data?.markets?.nodes ?? [];
-    const needle = String(countryCode || '').toUpperCase();
-
-    return markets.some((m: any) => ((m.regions?.nodes ?? []) as any[])
-      .some((r: any) => String(r?.code || '').toUpperCase() === needle)
-    );
+    `, { country: needle });
+    return !!json?.data?.marketByGeography?.id;
   } catch (err: any) {
     console.error('isCountryEnabledInMarketsForAdmin error', err?.message || err);
     return false;

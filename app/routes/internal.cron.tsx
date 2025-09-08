@@ -3,6 +3,7 @@ import { json } from "@remix-run/node";
 import prisma from "../db.server";
 import { enqueueDigestEmailBull } from "../services/queue-bull.server";
 import { enqueueScenarioRunBull } from "../services/queue-bull.server";
+import { markStuckRunsAsError } from "../models/run.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const url = new URL(request.url);
@@ -16,6 +17,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const shops = await prisma.shop.findMany({ include: { settings: true, scenarios: true } });
   for (const shop of shops) {
+    // Safety sweep: flip very old PENDING runs to ERROR so UI doesn't show stale pending
+    try { await markStuckRunsAsError(shop.id, 6 * 60 * 60 * 1000); } catch {}
     const settings = shop.settings;
     if (!settings) continue;
     const shouldRun = settings.promoMode || settings.dailyRunHourUtc === hour;

@@ -154,6 +154,8 @@ model Run {
 
   @@index([scenarioId])
   @@index([shopId])
+  @@index([shopId, createdAt])
+  @@index([shopId, status, createdAt])
 }
 
 enum JobStatus {

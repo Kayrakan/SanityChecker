@@ -4,11 +4,25 @@ import { authenticate } from "../shopify.server";
 import { adminGraphqlJson, getAdminClientByShop } from "../services/shopify-clients.server";
 import { fetchVariantInfos } from "../services/variants.server";
 
-// Simple in-memory cache for 60s
+// Simple in-memory cache per shop for 60s
 const CACHE_TTL_MS = 60_000;
-let lastKey = "";
-let lastValue: any = null;
-let lastTs = 0;
+type CacheEntry = { ts: number; value: any };
+const cache = new Map<string, CacheEntry>();
+const MAX_CACHE_ENTRIES = 200;
+function cacheGet(key: string) {
+  const e = cache.get(key);
+  if (!e) return null;
+  if (Date.now() - e.ts > CACHE_TTL_MS) { cache.delete(key); return null; }
+  return e.value;
+}
+function cacheSet(key: string, value: any) {
+  cache.set(key, { ts: Date.now(), value });
+  if (cache.size > MAX_CACHE_ENTRIES) {
+    let oldestKey: string | undefined; let oldestTs = Infinity;
+    for (const [k, v] of cache.entries()) { if (v.ts < oldestTs) { oldestTs = v.ts; oldestKey = k; } }
+    if (oldestKey) cache.delete(oldestKey);
+  }
+}
 
 function ok<T>(data: T, init?: number | ResponseInit) { return json(data as any, init as any); }
 function bad(message: string, code = 400) { return ok({ error: message }, { status: code }); }
@@ -124,9 +138,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   
   // Allow single-character searches; earlier guard was too strict for users
 
-  const cacheKey = buildKey(url);
-  if (cacheKey === lastKey && Date.now() - lastTs < CACHE_TTL_MS && lastValue) {
-    return ok(lastValue);
+  const cacheKey = `${session.shop}|${buildKey(url)}`;
+  const cached = cacheGet(cacheKey);
+  if (cached) {
+    return ok(cached, { headers: { "Cache-Control": "private, max-age=30, stale-while-revalidate=30" } });
   }
 
   const { admin } = await getAdminClientByShop(session.shop);
@@ -303,8 +318,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const payload = { items: items.slice(0, pageSize), pageInfo: { hasNextPage: (hasNextPage || filledWithinBatch || items.length > pageSize), endCursor }, sort, direction };
   console.log(`[variant-search] Returning ${payload.items.length} items, hasNextPage=${payload.pageInfo.hasNextPage}`);
-  lastKey = cacheKey; lastValue = payload; lastTs = Date.now();
-  return ok(payload);
+  cacheSet(cacheKey, payload);
+  return ok(payload, { headers: { "Cache-Control": "private, max-age=30, stale-while-revalidate=30" } });
 };
 
 export default null;

@@ -89,6 +89,12 @@ export async function runScenarioById(scenarioId: string, runId?: string) {
   if (!scenario) throw new Error("Scenario not found");
   const { shop } = scenario;
   
+  // Ensure we have a Run row to write results into. Prefer the provided runId.
+  // This avoids creating a second Run when we hit early-return paths (e.g., empty cart).
+  let run = runId ? await db.run.findUnique({ where: { id: runId } }) : null;
+  if (!run) {
+    run = await createRun(scenario.id, shop.id);
+  }
 
   // Build cart
   const lines = scenario.productVariantIds.map((variantId: string, idx: number) => ({
@@ -102,16 +108,11 @@ export async function runScenarioById(scenarioId: string, runId?: string) {
       { code: "EMPTY_CART", message: "Scenario has no items. Add at least one physical product with weight > 0." },
       { code: "ADMIN_LINKS", links: buildAdminLinks(shop.domain, {}) },
     ];
-    const emptyRun = await createRun(scenario.id, shop.id);
-    await completeRun(emptyRun.id, "FAIL", { groups: [], options: [], subtotal: null }, diag);
-    return await db.run.findUnique({ where: { id: emptyRun.id } });
+    await completeRun(run.id, "FAIL", { groups: [], options: [], subtotal: null }, diag);
+    return await db.run.findUnique({ where: { id: run.id } });
   }
 
-  // Use provided runId when present (idempotent). Otherwise create a new Run.
-  let run = runId ? await db.run.findUnique({ where: { id: runId } }) : null;
-  if (!run) {
-    run = await createRun(scenario.id, shop.id);
-  }
+  // Run row already ensured above
 
   try {
     function extractGroupsFromCart(cart: any): any[] {

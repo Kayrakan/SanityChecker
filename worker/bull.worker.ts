@@ -1,13 +1,14 @@
 import { Worker } from "bullmq";
 import { bullConnection } from "../app/services/queue-bull.server";
 import { runScenarioById } from "../app/services/runner.server";
+import { markStuckRunsAsError } from "../app/models/run.server";
 import prisma from "../app/db.server";
 import IORedis from "ioredis";
 
 // Simple per-shop lock to serialize runs per shop, avoiding API contention.
 const redis = new IORedis((bullConnection as any).url || (bullConnection as any));
 const LOCK_PREFIX = "run:lock:";
-const LOCK_TTL_MS = Number(process.env.SHOP_LOCK_TTL_MS || 60_000);
+const LOCK_TTL_MS = Number(process.env.SHOP_LOCK_TTL_MS || 600_000); // default 10 minutes
 
 async function acquireShopLock(shopId: string) {
   const key = LOCK_PREFIX + shopId;
@@ -29,11 +30,14 @@ const worker = new Worker(
     console.log("Processing job", job.name, job.id, JSON.stringify(job.data));
     if (job.name === "SCENARIO_RUN") {
       const { shopId, scenarioId, runId } = job.data as { shopId: string; scenarioId: string; runId?: string };
-      // Serialize per shop
-      const got = await acquireShopLock(shopId);
-      if (!got) {
-        // Let BullMQ retry with backoff
-        throw new Error("SHOP_LOCKED");
+      // Serialize per shop; actively wait for the lock to minimize long backoff delays
+      const startWait = Date.now();
+      let got = false;
+      while (!(got = await acquireShopLock(shopId))) {
+        if (Date.now() - startWait > LOCK_TTL_MS) {
+          throw new Error("SHOP_LOCK_TIMEOUT");
+        }
+        await new Promise((r) => setTimeout(r, 300));
       }
       try {
         console.log("Running scenario", scenarioId, "runId", runId || "(new)");
@@ -69,9 +73,39 @@ worker.on("ready", () => {
 });
 worker.on("failed", (job, err) => {
   console.error("Job failed", job?.name, job?.id, err?.message, err?.stack);
+  // If a scenario run ultimately exhausts retries, mark its Run as ERROR instead of leaving it PENDING
+  (async () => {
+    try {
+      if (!job || job.name !== "SCENARIO_RUN") return;
+      const isFinal = (job.attemptsMade || 0) >= ((job.opts?.attempts as number | undefined) || 1);
+      if (!isFinal) return; // will retry again
+      const runId = (job.data as any)?.runId as string | undefined;
+      if (!runId) return;
+      const existing = await prisma.run.findUnique({ where: { id: runId }, select: { status: true } });
+      if (!existing || existing.status !== "PENDING") return; // already updated by runner
+      const isLock = String(err?.message || "").includes("SHOP_LOCKED");
+      const diagnostics = [
+        { code: isLock ? "SHOP_LOCK_TIMEOUT" : "JOB_FINAL_FAILURE", message: String(err?.message || "Job failed after retries") },
+      ];
+      await prisma.run.update({ where: { id: runId }, data: { status: "ERROR" as any, diagnostics } });
+    } catch (e) {
+      console.error("Failed to mark run as ERROR after final job failure", (e as any)?.message || e);
+    }
+  })();
 });
 worker.on("completed", (job) => {
   console.log("Job completed", job.name, job.id);
+  (async () => {
+    try {
+      if (job.name === "SCENARIO_RUN") {
+        const shopId = (job.data as any)?.shopId as string | undefined;
+        if (shopId) {
+          // Opportunistically clean up any long-lived pending runs for this shop
+          await markStuckRunsAsError(shopId, 30 * 60 * 1000).catch(() => 0);
+        }
+      }
+    } catch {}
+  })();
 });
 
 // Keep process alive

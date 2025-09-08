@@ -375,7 +375,7 @@ export default function ScenarioItems() {
               rows.map((r, i) => (
                 <IndexTable.Row id={r.id} key={r.id} position={i}>
                   <IndexTable.Cell>
-                    {r.imageUrl ? <img src={r.imageUrl} alt="" style={{ width: 40, height: 40, objectFit: "cover", borderRadius: 4 }} /> : <Box background="bg-fill-tertiary" width="40px" height="40px" />}
+                    {r.imageUrl ? <img src={r.imageUrl} alt="" loading="lazy" decoding="async" width={40} height={40} style={{ width: 40, height: 40, objectFit: "cover", borderRadius: 4 }} /> : <Box background="bg-fill-tertiary" width="40px" height="40px" />}
                   </IndexTable.Cell>
                   <IndexTable.Cell>
                     <Text as="span" fontWeight="semibold">{r.productTitle}</Text>
