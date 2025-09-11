@@ -5,6 +5,7 @@ import { AppProvider } from "@shopify/shopify-app-remix/react";
 import { NavMenu } from "@shopify/app-bridge-react";
 import polarisStyles from "@shopify/polaris/build/esm/styles.css?url";
 import { Frame, Loading, Spinner, Text } from "@shopify/polaris";
+import { useEffect, useState } from "react";
 
 import { authenticate } from "../shopify.server";
 
@@ -23,6 +24,28 @@ export default function App() {
   const isBusy = navigation.state !== "idle" || fetchers.some((f) => f.state !== "idle");
   const isNavigating = navigation.state !== "idle";
 
+  // Smooth out UI during very short navigations (e.g., closing a modal)
+  const [showTopLoading, setShowTopLoading] = useState(false);
+  const [showOverlay, setShowOverlay] = useState(false);
+  useEffect(() => {
+    let t: any;
+    if (isBusy) {
+      t = setTimeout(() => setShowTopLoading(true), 120);
+    } else {
+      setShowTopLoading(false);
+    }
+    return () => { if (t) clearTimeout(t); };
+  }, [isBusy]);
+  useEffect(() => {
+    let t: any;
+    if (isNavigating) {
+      t = setTimeout(() => setShowOverlay(true), 250);
+    } else {
+      setShowOverlay(false);
+    }
+    return () => { if (t) clearTimeout(t); };
+  }, [isNavigating]);
+
   return (
     <AppProvider isEmbeddedApp apiKey={apiKey}>
       <NavMenu>
@@ -34,8 +57,8 @@ export default function App() {
         <Link to="/app/settings" prefetch="intent">Settings</Link>
       </NavMenu>
       <Frame>
-        {isBusy && <Loading />}
-        {isNavigating && (
+        {showTopLoading && <Loading />}
+        {showOverlay && (
           <div style={{ position: "fixed", inset: 0, background: "rgba(255,255,255,0.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 999 }}>
             <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8, padding: 24, borderRadius: 8, background: "rgba(255,255,255,0.9)", boxShadow: "0 2px 12px rgba(0,0,0,0.08)" }}>
               <Spinner accessibilityLabel="Loading page" size="large" />

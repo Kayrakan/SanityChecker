@@ -1,6 +1,6 @@
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "@remix-run/node";
 import { json, redirect } from "@remix-run/node";
-import { Form, useLoaderData } from "@remix-run/react";
+import { Form, useLoaderData, useNavigate, useLocation } from "@remix-run/react";
 import {
   Page,
   Card,
@@ -17,7 +17,9 @@ import {
   InlineGrid,
   Divider,
   Box,
+  Banner,
 } from "@shopify/polaris";
+import { useAppBridge } from "@shopify/app-bridge-react";
 import prisma from "../db.server";
 import { authenticate } from "../shopify.server";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -35,7 +37,7 @@ export const action = async ({ params, request }: ActionFunctionArgs) => {
   const variantIds = String(form.get("variantIds") || "").split(/\s*,\s*/).filter(Boolean);
   const quantities = String(form.get("quantities") || "").split(/\s*,\s*/).map(v => Number(v) || 1);
   await prisma.scenario.update({ where: { id: String(params.id) }, data: { productVariantIds: variantIds, quantities } });
-  return redirect(`/app/scenarios/${params.id}`);
+  return redirect(`/app/scenarios/${params.id}/items?modal=1&itemsSaved=1`);
 };
 
 type Row = {
@@ -67,6 +69,10 @@ function useDebounced<T>(value: T, delay = 350) {
 
 export default function ScenarioItems() {
   const { scenario } = useLoaderData<typeof loader>();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const app = useAppBridge();
+  const [justSaved, setJustSaved] = useState<boolean>(false);
 
   // Filters & search
   const [term, setTerm] = useState("");
@@ -105,6 +111,16 @@ export default function ScenarioItems() {
   const cursorStack = useRef<string[]>([]); // for Prev
 
   const pageSize = 25;
+
+  // Show success banner/toast when redirected with itemsSaved flag
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const itemsSaved = params.get('itemsSaved') === '1';
+    if (itemsSaved) {
+      setJustSaved(true);
+      try { app.toast.show('Items saved'); } catch {}
+    }
+  }, [location.search, app]);
 
   async function readJsonSafe(res: Response): Promise<any> {
     const text = await res.text();
@@ -264,6 +280,18 @@ export default function ScenarioItems() {
   return (
     <Page title="Scenario Items">
       <BlockStack gap="400">
+        {justSaved && (
+          <Banner
+            title="Items saved"
+            tone="success"
+            onDismiss={() => {
+              // Make dismissal instant without any navigation/state changes
+              setJustSaved(false);
+            }}
+          >
+            <p>Your selected items and quantities have been saved.</p>
+          </Banner>
+        )}
         <Card>
           <BlockStack gap="200">
             <InlineGrid columns={{ xs: 1, md: 4 }} gap="200">
@@ -469,24 +497,13 @@ export default function ScenarioItems() {
                 {mixedProfiles && <Badge tone="subdued">Mixed profiles</Badge>}
               </InlineStack>
               <InlineStack gap="200">
-                <Form method="post" onSubmit={() => {
-                  const url = new URL(window.location.href);
-                  if (url.searchParams.get('modal') === '1') {
-                    // After save, navigate back to parent without modal
-                    setTimeout(() => { window.location.assign(`/app/scenarios/${(scenario as any).id}`); }, 0);
-                  }
-                }}>
+                <Form method="post">
                   <input type="hidden" name="variantIds" value={selected.map(s => s.id).join(",")} />
                   <input type="hidden" name="quantities" value={selected.map(s => s.qty).join(",")} />
                   <Button submit variant="primary" disabled={!canSave}>{canSave ? "Save" : "Save"}</Button>
                 </Form>
                 <Button onClick={() => {
-                  const url = new URL(window.location.href);
-                  if (url.searchParams.get('modal') === '1') {
-                    window.location.assign(`/app/scenarios/${(scenario as any).id}`);
-                  } else {
-                    window.location.assign(`/app/scenarios/${(scenario as any).id}`);
-                  }
+                  navigate(`/app/scenarios/${(scenario as any).id}`);
                 }}>Cancel</Button>
               </InlineStack>
             </InlineStack>

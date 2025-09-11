@@ -1,9 +1,10 @@
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "@remix-run/node";
 import { json, redirect } from "@remix-run/node";
 import { Form, useLoaderData } from "@remix-run/react";
-import { Page, Card, TextField, BlockStack, Button, InlineStack, Text, Checkbox } from "@shopify/polaris";
+import { Page, Card, TextField, BlockStack, Button, InlineStack, Text, Select } from "@shopify/polaris";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
+import { useEffect, useState } from "react";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -40,20 +41,53 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
 export default function SettingsIndex() {
   const { settings } = useLoaderData<typeof loader>();
+  const [hour, setHour] = useState<string>(String(settings?.dailyRunHourUtc ?? 7));
+  const hourOptions = Array.from({ length: 24 }).map((_, h) => ({ label: `${String(h).padStart(2, '0')}:00 UTC`, value: String(h) }));
+  const [localPreview, setLocalPreview] = useState<string>("");
+  const [nextRunPreview, setNextRunPreview] = useState<string>("");
+  const [notificationEmail, setNotificationEmail] = useState<string>(String(settings?.notificationEmail ?? ''));
+
+  useEffect(() => {
+    const h = Number(hour) || 0;
+    const now = new Date();
+    const todayUtc = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), h, 0, 0));
+    const fmt = new Intl.DateTimeFormat(undefined, { weekday: 'short', hour: '2-digit', minute: '2-digit', timeZoneName: 'short' });
+    setLocalPreview(fmt.format(todayUtc));
+  }, [hour]);
+
+  useEffect(() => {
+    const h = Number(hour) || 0;
+    const now = new Date();
+    const addDay = now.getUTCHours() >= h ? 1 : 0;
+    const nextUtc = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + addDay, h, 0, 0));
+    const fmt = new Intl.DateTimeFormat(undefined, { weekday: 'short', year: 'numeric', month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', timeZoneName: 'short' });
+    setNextRunPreview(fmt.format(nextUtc));
+  }, [hour]);
   return (
     <Page title="Settings">
       <Card>
         <Form method="post">
           <BlockStack gap="200">
             <Text as="h3" variant="headingMd">Scheduling</Text>
-            <TextField name="dailyRunHourUtc" label="Daily run hour (UTC)" type="number" defaultValue={String(settings?.dailyRunHourUtc ?? 7)} />
-            <Checkbox label="Promo mode (hourly)" name="promoMode" defaultChecked={settings?.promoMode ?? false} />
+            <BlockStack gap="100">
+              <Select
+                label="Run time (UTC)"
+                options={hourOptions}
+                value={hour}
+                onChange={(v) => setHour(String(v))}
+              />
+              <Text as="p" variant="bodySm" tone="subdued">Your local time: {localPreview}</Text>
+              <Text as="p" variant="bodySm" tone="subdued">Next run: {nextRunPreview}</Text>
+              {/* Preserve existing values without exposing UI */}
+              <input type="hidden" name="dailyRunHourUtc" value={String(Number(hour) || 0)} />
+              <input type="hidden" name="promoMode" value={settings?.promoMode ? 'on' : 'off'} />
+            </BlockStack>
             <Text as="h3" variant="headingMd">Notifications</Text>
-            <TextField name="notificationEmail" label="Notification email" defaultValue={settings?.notificationEmail ?? ''} autoComplete="off" />
-            <TextField name="slackWebhookUrl" label="Slack webhook URL" defaultValue={settings?.slackWebhookUrl ?? ''} autoComplete="off" />
-            <Text as="h3" variant="headingMd">Storefront API</Text>
-            <Text as="p" variant="bodyMd">The app will automatically provision a Storefront access token when needed. If automatic provisioning is blocked by permissions, paste an existing token below as a temporary workaround.</Text>
-            <TextField name="storefrontAccessToken" label="Storefront access token (optional)" defaultValue={settings?.storefrontAccessToken ?? ''} autoComplete="off" />
+            <TextField name="notificationEmail" label="Notification email" value={notificationEmail} onChange={setNotificationEmail} type="email" autoComplete="email" />
+            {/* Slack disabled for now, preserve value */}
+            <input type="hidden" name="slackWebhookUrl" value={settings?.slackWebhookUrl ?? ''} />
+            {/* Storefront token handled automatically; preserve existing value */}
+            <input type="hidden" name="storefrontAccessToken" value={settings?.storefrontAccessToken ?? ''} />
             <InlineStack>
               <Button submit variant="primary">Save</Button>
             </InlineStack>

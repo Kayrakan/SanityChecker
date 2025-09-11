@@ -2,14 +2,15 @@ import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { json, redirect } from "@remix-run/node";
 import { Form, useLoaderData, useFetcher, Outlet, useLocation } from "@remix-run/react";
 import { useNavigate } from "@remix-run/react";
-import { Page, Card, TextField, Button, BlockStack, InlineStack, Checkbox, Text, Select, InlineError, Modal, Spinner } from "@shopify/polaris";
-import { useEffect, useMemo, useState } from "react";
+import { Page, Card, TextField, Button, BlockStack, InlineStack, Checkbox, Text, Select, InlineError, Modal, Spinner, Banner } from "@shopify/polaris";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { authenticate } from "../shopify.server";
 import { listShopifyCountries, listShopifyProvinces } from "../services/countries.server";
 import { getMarketCurrencyByCountry, isCountryEnabledInMarkets } from "../services/markets.server";
 import { fetchVariantInfos } from "../services/variants.server";
 import { fetchDeliveryProfilesForVariants } from "../services/profiles.server";
 import prisma from "../db.server";
+import { useAppBridge } from "@shopify/app-bridge-react";
 
 export const loader = async ({ params, request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -90,15 +91,18 @@ export const action = async ({ params, request }: ActionFunctionArgs) => {
         notes: String(form.get("notes") || "") || undefined,
       }) as any,
     });
+    const search = new URLSearchParams();
+    search.set('saved', '1');
     if (String(form.get('runAfterSave')) === '1') {
-      // enqueue immediate run
       const shop = await prisma.shop.findFirst({ where: { id: (await prisma.scenario.findUnique({ where: { id } }))!.shopId } });
       if (shop) {
         const { enqueueScenarioRunBull } = await import("../services/queue-bull.server");
-        await enqueueScenarioRunBull(shop.id, id);
+        const run = await enqueueScenarioRunBull(shop.id, id);
+        search.set('ran', '1');
+        if (run?.id) search.set('runId', String(run.id));
       }
     }
-    return redirect(`/app/scenarios/${id}`);
+    return redirect(`/app/scenarios/${id}?${search.toString()}`);
   }
   return redirect(`/app/scenarios/${id}`);
 };
@@ -109,8 +113,13 @@ export default function ScenarioDetail() {
   const loading = fetcher.state !== 'idle';
   const navigate = useNavigate();
   const location = useLocation();
+  const app = useAppBridge();
   const editingItems = location.pathname.endsWith('/items');
   const showModal = editingItems && new URLSearchParams(location.search).get('modal') === '1';
+  const [enqueued, setEnqueued] = useState<{ runId?: string } | null>(null);
+  const formRef = useRef<HTMLFormElement | null>(null);
+  const [runAfterSaveNext, setRunAfterSaveNext] = useState<boolean>(false);
+  const [justSaved, setJustSaved] = useState<boolean>(false);
 
   const [countryCode, setCountryCode] = useState<string>(scenario.countryCode);
   const [name, setName] = useState<string>(scenario.name || '');
@@ -252,6 +261,28 @@ export default function ScenarioDetail() {
     }
   }, [lookupProvince, provinceCode]);
 
+  // Success notifications (create, save, save & run)
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const saved = params.get('saved') === '1';
+    const ran = params.get('ran') === '1';
+    const runId = params.get('runId') || undefined;
+    if (ran) {
+      setEnqueued({ runId: runId || undefined });
+      try { app.toast.show('Scenario saved and run enqueued'); } catch {}
+    } else if (saved) {
+      setJustSaved(true);
+      try { app.toast.show('Scenario saved'); } catch {}
+    } else if (isNew) {
+      try { app.toast.show('New scenario created'); } catch {}
+    }
+    if (saved || ran || isNew) {
+      try { window.history.replaceState({}, '', location.pathname); } catch {}
+    }
+    // Only run when search changes or on mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.search]);
+
   const estimatedSubtotal = useMemo(() => {
     const pairs = (scenario.productVariantIds || []).map((id: string, idx: number) => ({
       qty: scenario.quantities[idx] || 1,
@@ -273,7 +304,7 @@ export default function ScenarioDetail() {
       {showModal ? (
         <Modal
           open
-          onClose={() => navigate(`/app/scenarios/${scenario.id}`)}
+          onClose={() => navigate(-1)}
           title="Edit items"
           size="large"
         >
@@ -285,9 +316,30 @@ export default function ScenarioDetail() {
         <Outlet />
       ) : (
       <BlockStack gap="400">
+        {enqueued ? (
+          <Banner
+            title="Scenario run enqueued"
+            tone="success"
+            onDismiss={() => setEnqueued(null)}
+            action={enqueued.runId ? { content: 'View run', url: `/app/runs/${enqueued.runId}` } : { content: 'Open Runs', url: '/app/runs' }}
+            secondaryAction={{ content: 'Open Runs', url: '/app/runs' }}
+          >
+            <p>You can monitor progress on the Runs page.</p>
+          </Banner>
+        ) : null}
+        {justSaved ? (
+          <Banner
+            title="Scenario saved"
+            tone="success"
+            onDismiss={() => setJustSaved(false)}
+          >
+            <p>Your changes have been saved.</p>
+          </Banner>
+        ) : null}
         <Card>
-          <Form method="post">
+          <Form method="post" ref={formRef as any}>
             <input type="hidden" name="intent" value="save" />
+            <input type="hidden" name="runAfterSave" value={runAfterSaveNext ? '1' : '0'} />
             <BlockStack gap="200">
               <TextField label="Name" name="name" value={name} onChange={setName} autoComplete="off" />
               {/* Hidden fallback so unchecked state still submits */}
@@ -369,8 +421,7 @@ export default function ScenarioDetail() {
                 <TextField label="Discount code" name="discountCode" value={discountCode} onChange={setDiscountCode} autoComplete="off" />
                 <input type="hidden" name="screenshotEnabled" value="0" />
                 <Checkbox label="Screenshot proof" name="screenshotEnabled" value="1" checked={!!screenshotEnabled} onChange={(checked) => setScreenshotEnabled(!!checked)} helpText="Takes a shipping-step screenshot; slightly slower, great for support." />
-                <input type="hidden" name="includeInPromo" value="0" />
-                <Checkbox label="Run hourly during promo mode" name="includeInPromo" value="1" checked={!!includeInPromo} onChange={(checked) => setIncludeInPromo(!!checked)} helpText="When promo mode is on, this scenario runs hourly." />
+                <input type="hidden" name="includeInPromo" value={includeInPromo ? '1' : '0'} />
               </InlineStack>
               <InlineStack gap="400">
                 <Select
@@ -399,13 +450,12 @@ export default function ScenarioDetail() {
                 ) : null}
               </InlineStack>
               <InlineStack>
-                <input type="hidden" name="alertDampen" value="0" />
-                <Checkbox label="Only alert after 2 consecutive fails" name="alertDampen" value="1" checked={alertDampen} onChange={(checked) => setAlertDampen(!!checked)} />
+                <input type="hidden" name="alertDampen" value={alertDampen ? '1' : '0'} />
               </InlineStack>
               <TextField label="Notes" name="notes" value={notes} onChange={setNotes} autoComplete="off" multiline={3} />
               <InlineStack gap="400">
-                <Button submit variant="primary">Save</Button>
-                <Button submit disabled={(() => {
+                <Button variant="primary" onClick={() => { setRunAfterSaveNext(false); setTimeout(() => { formRef.current?.requestSubmit(); }, 0); }}>Save</Button>
+                <Button disabled={(() => {
                   const hasItems = (scenario.productVariantIds || []).length > 0;
                   const needsProvince = !!countryMeta?.required?.provinceCode;
                   const needsCity = !!countryMeta?.required?.city;
@@ -416,12 +466,9 @@ export default function ScenarioDetail() {
                   const addrOk = needsAddress1 ? !!address1 : true;
                   return !(hasItems && postalOk && provinceOk && cityOk && addrOk) || zipStateMismatch;
                 })()} onClick={() => {
-                  const form = document.querySelector('form') as HTMLFormElement;
-                  const hidden = document.createElement('input');
-                  hidden.type = 'hidden';
-                  hidden.name = 'runAfterSave';
-                  hidden.value = '1';
-                  form.appendChild(hidden);
+                  setRunAfterSaveNext(true);
+                  // Defer to ensure hidden input value updates before submit
+                  setTimeout(() => { formRef.current?.requestSubmit(); }, 0);
                 }}>Save & Run now</Button>
               </InlineStack>
             </BlockStack>

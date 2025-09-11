@@ -458,7 +458,16 @@ export async function runScenarioById(scenarioId: string, runId?: string) {
     if (!options || options.length === 0) {
       status = "FAIL";
     } else if (diagnostics.length > 0) {
-      status = (scenario.alertLevel === "FAIL") ? "FAIL" : "WARN";
+      // If this scenario uses a discount code and the diagnostic is specifically
+      // about free shipping being missing, downgrade to WARN. Discount-code-based
+      // free shipping shows up as a non-zero estimatedCost in delivery options
+      // but becomes free at checkout. Treat that case as a warning by default.
+      const hasFreeMissing = Array.isArray(diagnostics) && diagnostics.some((d: any) => d?.code === "FREE_SHIPPING_MISSING");
+      if (scenario.discountCode && hasFreeMissing) {
+        status = "WARN";
+      } else {
+        status = (scenario.alertLevel === "FAIL") ? "FAIL" : "WARN";
+      }
     } else {
       status = "PASS";
     }
