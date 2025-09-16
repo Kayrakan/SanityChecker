@@ -59,9 +59,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const totalRuns = totalRuns7d || 1;
   const passRate = Math.round((pass / totalRuns) * 100);
 
-  const schedule = shop.settings?.promoMode
-    ? { label: "Hourly (promo mode)", detail: "Runs every hour" }
-    : { label: `Daily at ${String(shop.settings?.dailyRunHourUtc ?? 7).padStart(2, "0")}:00 UTC`, detail: "Runs once per day" };
+  const schedule = { label: `Daily at ${String(shop.settings?.dailyRunHourUtc ?? 7).padStart(2, "0")}:00 UTC`, detail: "Runs once per day" };
 
   return json({
     shopId: shop.id,

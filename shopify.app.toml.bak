@@ -1,0 +1,44 @@
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
+
+client_id = "c332e04b7bba61ec0b2e8d83612aac16"
+name = "SanityChecker"
+handle = "sanitychecker"
+application_url = "https://peoples-assembled-cultures-ev.trycloudflare.com"
+embedded = true
+
+[access_scopes]
+scopes = "read_products,read_markets,write_markets,read_shipping,read_discounts,read_inventory"
+
+[build]
+include_config_on_deploy = true
+automatically_update_urls_on_dev = true
+
+[webhooks]
+api_version = "2025-07"
+
+  [[webhooks.subscriptions]]
+  topics = [ "app/uninstalled" ]
+  uri = "/webhooks/app/uninstalled"
+
+  [[webhooks.subscriptions]]
+  topics = [ "app/scopes_update" ]
+  uri = "/webhooks/app/scopes_update"
+
+  # Product/market/shipping changes to auto-enqueue runs (best-effort coverage)
+  [[webhooks.subscriptions]]
+  topics = [ "products/update", "products/create" ]
+  uri = "/webhooks/products.update"
+
+  [[webhooks.subscriptions]]
+  topics = [ "markets/update", "markets/create" ]
+  uri = "/webhooks/markets.update"
+
+  [[webhooks.subscriptions]]
+  topics = [ "discounts/update", "discounts/create" ]
+  uri = "/webhooks/discounts.update"
+
+[auth]
+redirect_urls = ["https://peoples-assembled-cultures-ev.trycloudflare.com/auth/callback", "https://peoples-assembled-cultures-ev.trycloudflare.com/auth/shopify/callback", "https://peoples-assembled-cultures-ev.trycloudflare.com/api/auth/callback"]
+
+[pos]
+embedded = false

@@ -21,11 +21,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     try { await markStuckRunsAsError(shop.id, 6 * 60 * 60 * 1000); } catch {}
     const settings = shop.settings;
     if (!settings) continue;
-    const shouldRun = settings.promoMode || settings.dailyRunHourUtc === hour;
+    const shouldRun = settings.dailyRunHourUtc === hour;
     if (!shouldRun) continue;
     for (const s of shop.scenarios) {
       if (!s.active) continue;
-      if (settings.promoMode && !s.includeInPromo) continue;
       await enqueueScenarioRunBull(shop.id, s.id);
     }
     // Delay digest by 15 minutes to allow runs to complete

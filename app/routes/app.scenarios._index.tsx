@@ -4,20 +4,49 @@ import { useLoaderData, useFetcher, Link as RemixLink, Form } from "@remix-run/r
 import { Page, Card, Button, IndexTable, Text, BlockStack, InlineStack, Badge, Banner } from "@shopify/polaris";
 import { useEffect, useState } from "react";
 import { useAppBridge } from "@shopify/app-bridge-react";
-import { authenticate } from "../shopify.server";
+import { authenticate, BASIC_PLAN, PRO_PLAN, SCALE_PLAN } from "../shopify.server";
 import prisma from "../db.server";
 import { enqueueScenarioRunBull } from "../services/queue-bull.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  console.log("loader running");
-  const { session } = await authenticate.admin(request);
+  const { billing, session } = await authenticate.admin(request);
+  if (process.env.NODE_ENV !== "production" && process.env.ENFORCE_BILLING !== "1") {
+    const db: any = prisma;
+    const shop = await db.shop.findUnique({ where: { domain: session.shop }, include: { scenarios: true } });
+    const scenarios = shop?.scenarios ?? [];
+    const cap = 10;
+    const atCap = scenarios.length >= cap;
+    return json({ scenarios, shopId: shop?.id ?? null, cap, atCap });
+  }
+  const url = new URL(request.url);
+  await billing.require({
+    plans: [BASIC_PLAN, PRO_PLAN, SCALE_PLAN],
+    isTest: process.env.NODE_ENV !== "production",
+    onFailure: async () => {
+      try {
+        return await billing.request({
+          plan: BASIC_PLAN,
+          isTest: process.env.NODE_ENV !== "production",
+        });
+      } catch (e) {
+        console.error("billing.request failed", e);
+        throw e;
+      }
+    },
+  });
   const db: any = prisma;
   const shop = await db.shop.findUnique({ where: { domain: session.shop }, include: { scenarios: true } });
-  return json({ scenarios: shop?.scenarios ?? [], shopId: shop?.id ?? null });
+  const scenarios = shop?.scenarios ?? [];
+  // Determine cap by checking highest plan first
+  const scale = await billing.check({ session, plans: [SCALE_PLAN] });
+  const pro = scale.hasActivePayment ? { hasActivePayment: false } : await billing.check({ session, plans: [PRO_PLAN] });
+  const cap = scale.hasActivePayment ? 60 : pro.hasActivePayment ? 30 : 10;
+  const atCap = scenarios.length >= cap;
+  return json({ scenarios, shopId: shop?.id ?? null, cap, atCap });
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const { billing, session } = await authenticate.admin(request);
   const form = await request.formData();
   const intent = String(form.get("intent"));
   if (intent === "create") {
@@ -27,6 +56,19 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       create: { domain: session.shop, settings: { create: {} } },
       update: {},
     });
+    // Enforce plan caps: Basic 10, Pro 30, Scale 60
+    const count = await db.scenario.count({ where: { shopId: shop.id } });
+    // Simplest: query active subscription via check and infer caps
+    const hasBasic = await billing.check({ session, plans: [BASIC_PLAN] });
+    const hasPro = await billing.check({ session, plans: [PRO_PLAN] });
+    const hasScale = await billing.check({ session, plans: [SCALE_PLAN] });
+    const cap = hasScale.hasActivePayment ? 60 : hasPro.hasActivePayment ? 30 : 10;
+    if (count >= cap) {
+      const url = new URL("/app/billing", request.url);
+      url.searchParams.set("reason", "cap");
+      url.searchParams.set("cap", String(cap));
+      return Response.redirect(url.toString(), 302);
+    }
     const scenario = await db.scenario.create({
       data: {
         shopId: shop.id,
@@ -54,7 +96,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function ScenariosIndex() {
-  const { scenarios } = useLoaderData<typeof loader>();
+  const { scenarios, cap, atCap } = useLoaderData<typeof loader>();
   const app = useAppBridge();
   const [enqueued, setEnqueued] = useState<{ runId?: string } | null>(null);
   useEffect(() => {
@@ -66,6 +108,15 @@ export default function ScenariosIndex() {
   return (
     <Page title="Scenarios">
       <BlockStack gap="400">
+        {atCap ? (
+          <Banner
+            title="Scenario limit reached"
+            tone="warning"
+            action={{ content: 'Upgrade plan', url: '/app/billing?reason=cap' }}
+          >
+            <p>You’ve reached your plan’s limit of {cap} scenarios. Upgrade to create more.</p>
+          </Banner>
+        ) : null}
         {enqueued ? (
           <Banner
             title="Scenario run enqueued"
@@ -80,7 +131,9 @@ export default function ScenariosIndex() {
         <InlineStack>
           <Form method="post">
             <input type="hidden" name="intent" value="create" />
-            <Button submit variant="primary">New scenario</Button>
+            <Button submit variant="primary" disabled={atCap} aria-disabled={atCap}>
+              {atCap ? 'Upgrade to add more' : 'New scenario'}
+            </Button>
           </Form>
         </InlineStack>
         <Card>
@@ -140,6 +193,33 @@ function RunScenarioButton({ scenarioId, onEnqueued }: { scenarioId: string; onE
         )}
       </InlineStack>
     </fetcher.Form>
+  );
+}
+
+function UpgradeGate() {
+  const [capReached, setCapReached] = useState<boolean>(false);
+  const [cap, setCap] = useState<number>(10);
+  useEffect(() => {
+    // This gate is toggled by the action response when creating beyond cap
+    const sub = (e: any) => {
+      if (e?.detail?.type === 'CAP_REACHED') {
+        setCapReached(true);
+        setCap(Number(e.detail.cap) || 10);
+      }
+    };
+    window.addEventListener('app:cap', sub as any);
+    return () => { window.removeEventListener('app:cap', sub as any); };
+  }, []);
+  if (!capReached) return null;
+  return (
+    <Banner
+      title="Scenario limit reached"
+      tone="warning"
+      action={{ content: 'Upgrade plan', url: '/app/billing' }}
+      onDismiss={() => setCapReached(false)}
+    >
+      <p>You’ve reached your plan’s limit of {cap} scenarios. Upgrade to create more.</p>
+    </Banner>
   );
 }
 

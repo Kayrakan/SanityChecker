@@ -1,4 +1,5 @@
 import type { HeadersFunction, LoaderFunctionArgs } from "@remix-run/node";
+import { redirect } from "@remix-run/node";
 import { Link, Outlet, useLoaderData, useRouteError, useNavigation, useFetchers } from "@remix-run/react";
 import { boundary } from "@shopify/shopify-app-remix/server";
 import { AppProvider } from "@shopify/shopify-app-remix/react";
@@ -7,12 +8,31 @@ import polarisStyles from "@shopify/polaris/build/esm/styles.css?url";
 import { Frame, Loading, Spinner, Text } from "@shopify/polaris";
 import { useEffect, useState } from "react";
 
-import { authenticate } from "../shopify.server";
+import { authenticate, BASIC_PLAN, PRO_PLAN, SCALE_PLAN } from "../shopify.server";
 
 export const links = () => [{ rel: "stylesheet", href: polarisStyles }];
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  await authenticate.admin(request);
+  if (process.env.NODE_ENV !== "production" && process.env.ENFORCE_BILLING !== "1") {
+    return { apiKey: process.env.SHOPIFY_API_KEY || "" };
+  }
+  const { billing } = await authenticate.admin(request);
+  const url = new URL(request.url);
+  await billing.require({
+    plans: [BASIC_PLAN, PRO_PLAN, SCALE_PLAN],
+    isTest: process.env.NODE_ENV !== "production",
+    onFailure: async () => {
+      try {
+        return await billing.request({
+          plan: BASIC_PLAN,
+          isTest: process.env.NODE_ENV !== "production",
+        });
+      } catch (e) {
+        console.error("billing.request failed", e);
+        throw e;
+      }
+    },
+  });
 
   return { apiKey: process.env.SHOPIFY_API_KEY || "" };
 };

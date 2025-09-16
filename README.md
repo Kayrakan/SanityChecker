@@ -559,7 +559,7 @@ MongoDB does not support the [prisma migrate](https://www.prisma.io/docs/orm/pri
 
 ```toml
 [commands]
-predev = "npx prisma generate && npx prisma db push"
+predev = "npx prisma generate && npx prisma migrate deploy"
 dev = "npm exec remix vite:dev"
 ```
 

@@ -45,7 +45,7 @@ export default function SettingsIndex() {
   const hourOptions = Array.from({ length: 24 }).map((_, h) => ({ label: `${String(h).padStart(2, '0')}:00 UTC`, value: String(h) }));
   const [localPreview, setLocalPreview] = useState<string>("");
   const [nextRunPreview, setNextRunPreview] = useState<string>("");
-  const [notificationEmail, setNotificationEmail] = useState<string>(String(settings?.notificationEmail ?? ''));
+  const [slackWebhookUrl, setSlackWebhookUrl] = useState<string>(String(settings?.slackWebhookUrl ?? ''));
 
   useEffect(() => {
     const h = Number(hour) || 0;
@@ -83,9 +83,9 @@ export default function SettingsIndex() {
               <input type="hidden" name="promoMode" value={settings?.promoMode ? 'on' : 'off'} />
             </BlockStack>
             <Text as="h3" variant="headingMd">Notifications</Text>
-            <TextField name="notificationEmail" label="Notification email" value={notificationEmail} onChange={setNotificationEmail} type="email" autoComplete="email" />
-            {/* Slack disabled for now, preserve value */}
-            <input type="hidden" name="slackWebhookUrl" value={settings?.slackWebhookUrl ?? ''} />
+            <TextField name="slackWebhookUrl" label="Slack webhook URL" value={slackWebhookUrl} onChange={setSlackWebhookUrl} autoComplete="off" helpText="Paste your Slack Incoming Webhook URL to receive daily digests." />
+            {/* Email disabled for now; preserve existing value */}
+            <input type="hidden" name="notificationEmail" value={settings?.notificationEmail ?? ''} />
             {/* Storefront token handled automatically; preserve existing value */}
             <input type="hidden" name="storefrontAccessToken" value={settings?.storefrontAccessToken ?? ''} />
             <InlineStack>
