@@ -1,46 +1,39 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { json, redirect } from "@remix-run/node";
-import { useLoaderData, useFetcher, Link as RemixLink, Form } from "@remix-run/react";
+import { useLoaderData, useFetcher, Link as RemixLink, Form, useLocation } from "@remix-run/react";
 import { Page, Card, Button, IndexTable, Text, BlockStack, InlineStack, Badge, Banner } from "@shopify/polaris";
 import { useEffect, useState } from "react";
 import { useAppBridge } from "@shopify/app-bridge-react";
-import { authenticate, BASIC_PLAN, PRO_PLAN, SCALE_PLAN } from "../shopify.server";
+import { authenticate } from "../shopify.server";
+import { BASIC_PLAN, PRO_PLAN, SCALE_PLAN, PLAN_DISPLAY_INFO, PLAN_ORDER } from "../billing/plans";
 import prisma from "../db.server";
 import { enqueueScenarioRunBull } from "../services/queue-bull.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { billing, session } = await authenticate.admin(request);
-  if (process.env.NODE_ENV !== "production" && process.env.ENFORCE_BILLING !== "1") {
-    const db: any = prisma;
-    const shop = await db.shop.findUnique({ where: { domain: session.shop }, include: { scenarios: true } });
-    const scenarios = shop?.scenarios ?? [];
-    const cap = 10;
-    const atCap = scenarios.length >= cap;
-    return json({ scenarios, shopId: shop?.id ?? null, cap, atCap });
-  }
   const url = new URL(request.url);
-  await billing.require({
-    plans: [BASIC_PLAN, PRO_PLAN, SCALE_PLAN],
-    isTest: process.env.NODE_ENV !== "production",
-    onFailure: async () => {
-      try {
-        return await billing.request({
-          plan: BASIC_PLAN,
-          isTest: process.env.NODE_ENV !== "production",
-        });
-      } catch (e) {
-        console.error("billing.request failed", e);
-        throw e;
-      }
-    },
-  });
+  const bypassBilling = process.env.NODE_ENV !== "production" && process.env.ENFORCE_BILLING !== "1";
+
+  let billingState: Awaited<ReturnType<typeof billing.require>> | null = null;
+  if (!bypassBilling) {
+    billingState = await billing.require({
+      plans: [BASIC_PLAN, PRO_PLAN, SCALE_PLAN],
+      isTest: process.env.NODE_ENV !== "production",
+      onFailure: async () => {
+        const billingUrl = new URL("/app/billing", url);
+        billingUrl.search = url.search;
+        if (!billingUrl.searchParams.has("from")) {
+          billingUrl.searchParams.set("from", url.pathname);
+        }
+        return redirect(billingUrl.toString());
+      },
+    });
+  }
+
   const db: any = prisma;
   const shop = await db.shop.findUnique({ where: { domain: session.shop }, include: { scenarios: true } });
   const scenarios = shop?.scenarios ?? [];
-  // Determine cap by checking highest plan first
-  const scale = await billing.check({ session, plans: [SCALE_PLAN] });
-  const pro = scale.hasActivePayment ? { hasActivePayment: false } : await billing.check({ session, plans: [PRO_PLAN] });
-  const cap = scale.hasActivePayment ? 60 : pro.hasActivePayment ? 30 : 10;
+  const cap = bypassBilling ? 10 : resolveScenarioCap(billingState?.appSubscriptions ?? []);
   const atCap = scenarios.length >= cap;
   return json({ scenarios, shopId: shop?.id ?? null, cap, atCap });
 };
@@ -49,6 +42,25 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const { billing, session } = await authenticate.admin(request);
   const form = await request.formData();
   const intent = String(form.get("intent"));
+  const url = new URL(request.url);
+  const bypassBilling = process.env.NODE_ENV !== "production" && process.env.ENFORCE_BILLING !== "1";
+
+  let billingState: Awaited<ReturnType<typeof billing.require>> | null = null;
+  if (!bypassBilling) {
+    billingState = await billing.require({
+      plans: [BASIC_PLAN, PRO_PLAN, SCALE_PLAN],
+      isTest: process.env.NODE_ENV !== "production",
+      onFailure: async () => {
+        const billingUrl = new URL("/app/billing", url);
+        billingUrl.search = url.search;
+        if (!billingUrl.searchParams.has("from")) {
+          billingUrl.searchParams.set("from", url.pathname);
+        }
+        return redirect(billingUrl.toString());
+      },
+    });
+  }
+
   if (intent === "create") {
     const db: any = prisma;
     const shop = await db.shop.upsert({
@@ -56,18 +68,17 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       create: { domain: session.shop, settings: { create: {} } },
       update: {},
     });
-    // Enforce plan caps: Basic 10, Pro 30, Scale 60
     const count = await db.scenario.count({ where: { shopId: shop.id } });
-    // Simplest: query active subscription via check and infer caps
-    const hasBasic = await billing.check({ session, plans: [BASIC_PLAN] });
-    const hasPro = await billing.check({ session, plans: [PRO_PLAN] });
-    const hasScale = await billing.check({ session, plans: [SCALE_PLAN] });
-    const cap = hasScale.hasActivePayment ? 60 : hasPro.hasActivePayment ? 30 : 10;
+    const cap = bypassBilling ? 10 : resolveScenarioCap(billingState?.appSubscriptions ?? []);
     if (count >= cap) {
-      const url = new URL("/app/billing", request.url);
-      url.searchParams.set("reason", "cap");
-      url.searchParams.set("cap", String(cap));
-      return Response.redirect(url.toString(), 302);
+      const billingUrl = new URL("/app/billing", url);
+      billingUrl.search = url.search;
+      billingUrl.searchParams.set("reason", "cap");
+      billingUrl.searchParams.set("cap", String(cap));
+      if (!billingUrl.searchParams.has("from")) {
+        billingUrl.searchParams.set("from", url.pathname);
+      }
+      return Response.redirect(billingUrl.toString(), 302);
     }
     const scenario = await db.scenario.create({
       data: {
@@ -81,6 +92,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     });
     return redirect(`/app/scenarios/${scenario.id}?new=1`);
   }
+
   if (intent === "run") {
     const scenarioId = String(form.get("scenarioId"));
     const db: any = prisma;
@@ -92,11 +104,37 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const run = await enqueueScenarioRunBull(shop.id, scenarioId);
     return json({ ok: true, runId: run.id });
   }
+
   return json({ ok: true });
 };
 
+function resolveScenarioCap(subscriptions: Array<{ name?: string | null }> = []) {
+  const names = new Set(subscriptions.map((sub) => sub?.name));
+  for (const plan of PLAN_ORDER) {
+    if (names.has(plan)) {
+      const info = PLAN_DISPLAY_INFO[plan];
+      if (info?.cap) return info.cap;
+    }
+  }
+  return PLAN_DISPLAY_INFO[BASIC_PLAN].cap;
+}
+
+function buildBillingUrl(existingSearch: string, extraParams?: Record<string, string>) {
+  const params = new URLSearchParams(existingSearch);
+  if (extraParams) {
+    for (const [key, value] of Object.entries(extraParams)) {
+      params.set(key, value);
+    }
+  }
+  const query = params.toString();
+  return `/app/billing${query ? `?${query}` : ""}`;
+}
+
 export default function ScenariosIndex() {
   const { scenarios, cap, atCap } = useLoaderData<typeof loader>();
+  const location = useLocation();
+  const billingUrl = buildBillingUrl(location.search, { from: location.pathname });
+  const billingCapUrl = buildBillingUrl(location.search, { from: location.pathname, reason: "cap" });
   const app = useAppBridge();
   const [enqueued, setEnqueued] = useState<{ runId?: string } | null>(null);
   useEffect(() => {
@@ -112,7 +150,7 @@ export default function ScenariosIndex() {
           <Banner
             title="Scenario limit reached"
             tone="warning"
-            action={{ content: 'Upgrade plan', url: '/app/billing?reason=cap' }}
+            action={{ content: 'Upgrade plan', url: billingCapUrl }}
           >
             <p>You’ve reached your plan’s limit of {cap} scenarios. Upgrade to create more.</p>
           </Banner>
@@ -197,6 +235,8 @@ function RunScenarioButton({ scenarioId, onEnqueued }: { scenarioId: string; onE
 }
 
 function UpgradeGate() {
+  const location = useLocation();
+  const billingUrl = buildBillingUrl(location.search, { from: location.pathname });
   const [capReached, setCapReached] = useState<boolean>(false);
   const [cap, setCap] = useState<number>(10);
   useEffect(() => {
@@ -215,11 +255,10 @@ function UpgradeGate() {
     <Banner
       title="Scenario limit reached"
       tone="warning"
-      action={{ content: 'Upgrade plan', url: '/app/billing' }}
+      action={{ content: 'Upgrade plan', url: billingUrl }}
       onDismiss={() => setCapReached(false)}
     >
       <p>You’ve reached your plan’s limit of {cap} scenarios. Upgrade to create more.</p>
     </Banner>
   );
 }
-

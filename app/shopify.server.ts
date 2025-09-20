@@ -7,17 +7,38 @@ import {
 } from "@shopify/shopify-app-remix/server";
 import { PrismaSessionStorage } from "@shopify/shopify-app-session-storage-prisma";
 import prisma from "./db.server";
+import { BASIC_PLAN, PRO_PLAN, SCALE_PLAN } from "./billing/plans";
 
-export const BASIC_PLAN = "basic" as const;
-export const PRO_PLAN = "pro" as const;
-export const SCALE_PLAN = "scale" as const;
+const APP_URL = (() => {
+  const raw = process.env.SHOPIFY_APP_URL || process.env.HOST || "";
+  try {
+    const u = new URL(raw);
+    const isAdminHost = u.hostname === "admin.shopify.com" || u.hostname.endsWith(".admin.shopify.com");
+    const isMyShopify = u.hostname.endsWith("myshopify.com");
+    const inAdminPath = u.pathname.startsWith("/admin");
+    if (isAdminHost || isMyShopify || inAdminPath) {
+      const fallback = process.env.HOST || "";
+      if (fallback && fallback !== raw) {
+        // eslint-disable-next-line no-console
+        console.warn("[config] Ignoring invalid SHOPIFY_APP_URL (points to Shopify Admin/storefront). Falling back to HOST.", { raw, fallback });
+        return fallback;
+      }
+      // eslint-disable-next-line no-console
+      console.warn("[config] Invalid SHOPIFY_APP_URL and no HOST fallback. Billing/auth may fail.", { raw });
+      return "";
+    }
+    return u.origin;
+  } catch {
+    return raw;
+  }
+})();
 
 const shopify = shopifyApp({
   apiKey: process.env.SHOPIFY_API_KEY,
   apiSecretKey: process.env.SHOPIFY_API_SECRET || "",
   apiVersion: ApiVersion.July25,
   scopes: process.env.SCOPES?.split(","),
-  appUrl: process.env.SHOPIFY_APP_URL || "",
+  appUrl: APP_URL,
   authPathPrefix: "/auth",
   sessionStorage: new PrismaSessionStorage(prisma),
   distribution: AppDistribution.AppStore,

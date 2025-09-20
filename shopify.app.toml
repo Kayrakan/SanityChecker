@@ -2,18 +2,40 @@
 
 client_id = "f935d4e94f7cb497bb0c7b8e996022a0"
 name = "ShipSense"
-application_url = "https://example.com"
+application_url = "https://routers-copyright-friends-explained.trycloudflare.com"
 embedded = true
 
 [build]
 automatically_update_urls_on_dev = true
 
+
 [webhooks]
 api_version = "2025-07"
 
+  [[webhooks.subscriptions]]
+  topics = [ "app/uninstalled" ]
+  uri = "/webhooks/app/uninstalled"
+
+  [[webhooks.subscriptions]]
+  topics = [ "app/scopes_update" ]
+  uri = "/webhooks/app/scopes_update"
+
+  # Product/market/shipping changes to auto-enqueue runs (best-effort coverage)
+  [[webhooks.subscriptions]]
+  topics = [ "products/update", "products/create" ]
+  uri = "/webhooks/products.update"
+
+  [[webhooks.subscriptions]]
+  topics = [ "markets/update", "markets/create" ]
+  uri = "/webhooks/markets.update"
+
+  [[webhooks.subscriptions]]
+  topics = [ "discounts/update", "discounts/create" ]
+  uri = "/webhooks/discounts.update"
+
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-scopes = ""
+scopes = "read_products,read_markets,write_markets,read_shipping,read_discounts,read_inventory,unauthenticated_read_checkouts,unauthenticated_write_checkouts,unauthenticated_read_product_listings"
 optional_scopes = [ ]
 use_legacy_install_flow = false
 

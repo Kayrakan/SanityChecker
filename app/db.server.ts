@@ -5,12 +5,39 @@ declare global {
   var prismaGlobal: PrismaClient | undefined;
 }
 
-if (process.env.NODE_ENV !== "production") {
-  if (!global.prismaGlobal) {
-    global.prismaGlobal = new PrismaClient();
+async function connectWithRetry(client: PrismaClient) {
+  const maxAttempts = Number.parseInt(process.env.PRISMA_CONNECT_RETRIES ?? '5', 10);
+  const baseDelay = Number.parseInt(process.env.PRISMA_CONNECT_RETRY_DELAY_MS ?? '2000', 10);
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      await client.$connect();
+      return; // Connected successfully
+    } catch (error) {
+      if (attempt === maxAttempts) {
+        throw error;
+      }
+      const wait = baseDelay * attempt;
+      await new Promise((resolve) => setTimeout(resolve, wait));
+    }
   }
 }
 
-const prisma: PrismaClient = global.prismaGlobal ?? new PrismaClient();
+function createClient() {
+  const client = new PrismaClient();
+  void connectWithRetry(client).catch((error) => {
+    console.error("Failed to connect to the database after retries", error);
+    process.exitCode = 1;
+  });
+  return client;
+}
+
+if (process.env.NODE_ENV !== "production") {
+  if (!global.prismaGlobal) {
+    global.prismaGlobal = createClient();
+  }
+}
+
+const prisma: PrismaClient = global.prismaGlobal ?? createClient();
 
 export default prisma;

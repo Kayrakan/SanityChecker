@@ -8,34 +8,70 @@ import polarisStyles from "@shopify/polaris/build/esm/styles.css?url";
 import { Frame, Loading, Spinner, Text } from "@shopify/polaris";
 import { useEffect, useState } from "react";
 
-import { authenticate, BASIC_PLAN, PRO_PLAN, SCALE_PLAN } from "../shopify.server";
+import { authenticate } from "../shopify.server";
+import { BASIC_PLAN, PRO_PLAN, SCALE_PLAN } from "../billing/plans";
 
 export const links = () => [{ rel: "stylesheet", href: polarisStyles }];
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
+  const url = new URL(request.url);
+
+  if (!url.searchParams.has("shop")) {
+    const derived = deriveShopFromHost(url.searchParams.get("host"));
+    if (derived) {
+      const redirectUrl = new URL(url.toString());
+      redirectUrl.searchParams.set("shop", derived);
+      return redirect(redirectUrl.toString());
+    }
+  }
+
   if (process.env.NODE_ENV !== "production" && process.env.ENFORCE_BILLING !== "1") {
     return { apiKey: process.env.SHOPIFY_API_KEY || "" };
   }
+
   const { billing } = await authenticate.admin(request);
-  const url = new URL(request.url);
+
+  if (url.pathname.startsWith("/app/billing")) {
+    return { apiKey: process.env.SHOPIFY_API_KEY || "" };
+  }
+
   await billing.require({
     plans: [BASIC_PLAN, PRO_PLAN, SCALE_PLAN],
     isTest: process.env.NODE_ENV !== "production",
     onFailure: async () => {
-      try {
-        return await billing.request({
-          plan: BASIC_PLAN,
-          isTest: process.env.NODE_ENV !== "production",
-        });
-      } catch (e) {
-        console.error("billing.request failed", e);
-        throw e;
+      const billingUrl = new URL("/app/billing", url);
+      billingUrl.search = url.search;
+      if (!billingUrl.searchParams.has("from")) {
+        billingUrl.searchParams.set("from", url.pathname);
       }
+      return redirect(billingUrl.toString());
     },
   });
 
   return { apiKey: process.env.SHOPIFY_API_KEY || "" };
 };
+
+function deriveShopFromHost(hostParam: string | null) {
+  if (!hostParam) return null;
+  let decoded: string;
+  try {
+    decoded = Buffer.from(hostParam, "base64").toString("utf-8");
+  } catch {
+    return null;
+  }
+  if (!decoded) return null;
+  if (decoded.includes("admin.shopify.com")) {
+    const match = decoded.match(/\/store\/([^\/?]+)/);
+    if (match?.[1]) {
+      const store = match[1];
+      return store.endsWith(".myshopify.com") ? store : `${store}.myshopify.com`;
+    }
+  }
+  if (decoded.includes(".myshopify.com")) {
+    return decoded.split("/")[0];
+  }
+  return null;
+}
 
 export default function App() {
   const { apiKey } = useLoaderData<typeof loader>();
