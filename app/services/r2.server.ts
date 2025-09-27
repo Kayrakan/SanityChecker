@@ -1,28 +1,60 @@
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import crypto from "crypto";
 
-function getEnv(name: string, optional = false): string | undefined {
-  const v = process.env[name];
-  if (!v && !optional) {
+type R2Config = {
+  accountId: string;
+  accessKeyId: string;
+  secretAccessKey: string;
+  bucket: string;
+  publicBase?: string;
+};
+
+function requireEnv(name: string): string {
+  const value = process.env[name];
+  if (!value) {
     throw new Error(`Missing required env var: ${name}`);
   }
-  return v;
+  return value;
 }
 
-const accountId = getEnv("R2_ACCOUNT_ID");
-const accessKeyId = getEnv("R2_ACCESS_KEY_ID");
-const secretAccessKey = getEnv("R2_SECRET_ACCESS_KEY");
-const bucket = getEnv("R2_BUCKET");
-const publicBase = getEnv("R2_PUBLIC_BASE_URL", true);
+let cachedConfig: R2Config | null = null;
+function getConfig(): R2Config {
+  if (!cachedConfig) {
+    cachedConfig = {
+      accountId: requireEnv("R2_ACCOUNT_ID"),
+      accessKeyId: requireEnv("R2_ACCESS_KEY_ID"),
+      secretAccessKey: requireEnv("R2_SECRET_ACCESS_KEY"),
+      bucket: requireEnv("R2_BUCKET"),
+      publicBase: process.env.R2_PUBLIC_BASE_URL,
+    };
+  }
+  return cachedConfig;
+}
 
-const endpoint = `https://${accountId}.r2.cloudflarestorage.com`;
+let cachedClient: S3Client | null = null;
+function getClient(): S3Client {
+  if (!cachedClient) {
+    const { accountId, accessKeyId, secretAccessKey } = getConfig();
+    cachedClient = new S3Client({
+      region: "auto",
+      endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
+      credentials: {
+        accessKeyId,
+        secretAccessKey,
+      },
+    });
+  }
+  return cachedClient;
+}
 
-export const r2Client = new S3Client({
-  region: "auto",
-  endpoint,
-  credentials: {
-    accessKeyId: String(accessKeyId),
-    secretAccessKey: String(secretAccessKey),
+export const r2Client = new Proxy({} as S3Client, {
+  get(_target, prop, receiver) {
+    const client = getClient();
+    const value = Reflect.get(client, prop, receiver);
+    if (typeof value === "function") {
+      return value.bind(client);
+    }
+    return value;
   },
 });
 
@@ -36,9 +68,10 @@ export async function r2PutObject(opts: {
   aclPublic?: boolean; // R2 ignores ACL; we build URL either via publicBase or path-style
 }): Promise<UploadResult> {
   const objectKey = opts.key || generateKey();
-  await r2Client.send(
+  const { bucket } = getConfig();
+  await getClient().send(
     new PutObjectCommand({
-      Bucket: String(bucket),
+      Bucket: bucket,
       Key: objectKey,
       Body: opts.body,
       ContentType: opts.contentType,
@@ -50,6 +83,7 @@ export async function r2PutObject(opts: {
 }
 
 export function buildPublicUrl(key: string): string {
+  const { accountId, bucket, publicBase } = getConfig();
   if (publicBase) {
     const base = publicBase.endsWith("/") ? publicBase.slice(0, -1) : publicBase;
     return `${base}/${encodeURI(key)}`;
@@ -79,5 +113,4 @@ function generateKey(): string {
   const rand = crypto.randomBytes(6).toString("hex");
   return `screenshots/${y}/${m}/${d}/${h}/${rand}.png`;
 }
-
 
