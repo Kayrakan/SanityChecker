@@ -7,6 +7,8 @@ const APP_BRIDGE_URL = "https://cdn.shopify.com/shopifycloud/app-bridge.js";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const url = new URL(request.url);
+  console.log('url');
+  console.log(url);
   const reloadParam = url.searchParams.get("shopify-reload");
 
   const appBase = (() => {
@@ -26,10 +28,20 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       return null;
     }
     try {
-      return new URL(reloadParam).toString();
+      const absolute = new URL(reloadParam).toString();
+      try {
+        // eslint-disable-next-line no-console
+        console.info("[auth.session-token] Resolved absolute reload", { reloadParam, resolved: absolute });
+      } catch {}
+      return absolute;
     } catch {
       try {
-        return new URL(reloadParam, appBase).toString();
+        const relative = new URL(reloadParam, appBase).toString();
+        try {
+          // eslint-disable-next-line no-console
+          console.info("[auth.session-token] Resolved relative reload", { reloadParam, appBase, resolved: relative });
+        } catch {}
+        return relative;
       } catch {
         return null;
       }
@@ -38,6 +50,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   // If Shopify calls this route without a reload target, fall back to our normal auth flow.
   if (!resolvedReloadUrl) {
+    try {
+      // eslint-disable-next-line no-console
+      console.warn("[auth.session-token] Missing reload target, falling back to auth", { reloadParam, appBase });
+    } catch {}
     await authenticate.admin(request);
     const fallback = url.searchParams.get("from") || "/app";
     throw redirect(fallback);

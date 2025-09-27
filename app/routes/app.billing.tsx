@@ -18,7 +18,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const msg = search.get("msg") || undefined;
   const bypassBilling = process.env.NODE_ENV !== "production" && process.env.ENFORCE_BILLING !== "1";
   const billingSummary = await getBillingSummary({ billing, bypassBilling });
-  const hostParam = resolveHostParam({ request, sessionToken });
+  const hostParam = resolveHostParam({ request, sessionToken, shop: session.shop });
   const embedded = search.get("embedded") === "1" || sessionToken ? "1" : null;
   return json({
     billing: billingSummary,
@@ -60,7 +60,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const shop = String(form.get("shop") || current.searchParams.get("shop") || session.shop);
   const from = String(form.get("from") || current.searchParams.get("from") || "/app");
   const params = new URLSearchParams(current.search);
-  const resolvedHost = host || resolveHostParam({ request, sessionToken });
+  const resolvedHost = resolveHostParam({
+    request,
+    sessionToken,
+    shop,
+    explicitHost: host && host.trim() ? host : null,
+  });
   if (resolvedHost) {
     params.set("host", resolvedHost);
   } else {
@@ -110,6 +115,17 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const sessionTokenUrl = new URL(base.toString());
     sessionTokenUrl.pathname = "/auth/session-token";
     sessionTokenUrl.search = `shopify-reload=${encodeURIComponent(targetPath)}`;
+    try {
+      // eslint-disable-next-line no-console
+      console.info("[billing.action] Prepared redirect", {
+        plan,
+        shop,
+        resolvedHost,
+        shouldEmbed,
+        targetPath,
+        returnUrl: sessionTokenUrl.toString(),
+      });
+    } catch {}
     return sessionTokenUrl.toString();
   })();
   try {
@@ -321,13 +337,36 @@ function PlanCard({
   );
 }
 
-function resolveHostParam({ request, sessionToken }: { request: Request; sessionToken?: { dest?: unknown } | null }) {
+function resolveHostParam({
+  request,
+  sessionToken,
+  explicitHost,
+  shop,
+}: {
+  request: Request;
+  sessionToken?: { dest?: unknown } | null;
+  explicitHost?: string | null;
+  shop?: string | null;
+}) {
+  const coerce = (value: string | null | undefined) => normalizeEmbeddedHost(value, { shop, sessionToken });
+  if (explicitHost) {
+    const normalized = coerce(explicitHost);
+    if (normalized) return normalized;
+  }
   const url = new URL(request.url);
-  const fromQuery = url.searchParams.get("host");
+  const fromQuery = coerce(url.searchParams.get("host"));
   if (fromQuery) {
     return fromQuery;
   }
-  return deriveHostFromSessionToken(sessionToken);
+  const fromToken = coerce(deriveHostFromSessionToken(sessionToken));
+  if (fromToken) {
+    return fromToken;
+  }
+  const fallback = shop ? buildAdminHost(shop) : null;
+  if (fallback) {
+    return fallback;
+  }
+  return null;
 }
 
 function deriveHostFromSessionToken(sessionToken?: { dest?: unknown } | null) {
@@ -349,4 +388,84 @@ function deriveHostFromSessionToken(sessionToken?: { dest?: unknown } | null) {
   } catch (error) {
     return null;
   }
+}
+
+function normalizeEmbeddedHost(
+  encodedHost: string | null | undefined,
+  { shop, sessionToken }: { shop?: string | null; sessionToken?: { dest?: unknown } | null },
+) {
+  if (!encodedHost) {
+    return null;
+  }
+  const decoded = decodeHost(encodedHost);
+  if (!decoded) {
+    return encodedHost;
+  }
+  if (decoded.includes("admin.shopify.com")) {
+    return encodeHost(trimTrailingSlash(decoded));
+  }
+  const candidate = coerceMyShopifyHost(decoded, shop);
+  if (candidate) {
+    return encodeHost(candidate);
+  }
+  const fallbackFromToken = deriveHostFromSessionToken(sessionToken);
+  if (fallbackFromToken && fallbackFromToken !== encodedHost) {
+    return normalizeEmbeddedHost(fallbackFromToken, { shop, sessionToken: null });
+  }
+  if (shop) {
+    const fallback = buildAdminHost(shop);
+    if (fallback) {
+      return fallback;
+    }
+  }
+  return encodedHost;
+}
+
+function coerceMyShopifyHost(rawHost: string, shop?: string | null) {
+  try {
+    const asUrl = new URL(rawHost.startsWith("http") ? rawHost : `https://${rawHost}`);
+    const store = (shop && extractStoreFromShop(shop)) || extractStoreFromShop(asUrl.hostname);
+    if (!store) {
+      return null;
+    }
+    const path = asUrl.pathname && asUrl.pathname !== "/" ? asUrl.pathname : "";
+    return `admin.shopify.com/store/${store}${path}`;
+  } catch {
+    if (shop) {
+      const store = extractStoreFromShop(shop);
+      if (store) {
+        return `admin.shopify.com/store/${store}`;
+      }
+    }
+  }
+  return null;
+}
+
+function decodeHost(encoded: string) {
+  try {
+    return Buffer.from(encoded, "base64").toString("utf-8");
+  } catch {
+    return null;
+  }
+}
+
+function encodeHost(raw: string) {
+  return Buffer.from(raw, "utf-8").toString("base64");
+}
+
+function trimTrailingSlash(value: string) {
+  return value.endsWith("/") ? value.slice(0, -1) : value;
+}
+
+function buildAdminHost(shop: string) {
+  const store = extractStoreFromShop(shop);
+  if (!store) {
+    return null;
+  }
+  return encodeHost(`admin.shopify.com/store/${store}`);
+}
+
+function extractStoreFromShop(shop: string | null | undefined) {
+  if (!shop) return null;
+  return shop.endsWith(".myshopify.com") ? shop.replace(/\.myshopify\.com$/i, "") : shop;
 }

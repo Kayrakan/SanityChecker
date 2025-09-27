@@ -22,6 +22,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     if (derived) {
       const redirectUrl = new URL(url.toString());
       redirectUrl.searchParams.set("shop", derived);
+      try {
+        // eslint-disable-next-line no-console
+        console.info("[app.loader] Added missing shop param", {
+          originalUrl: url.toString(),
+          hostParam: url.searchParams.get("host"),
+          derivedShop: derived,
+          redirectTo: redirectUrl.toString(),
+        });
+      } catch {}
       return redirect(redirectUrl.toString());
     }
   }
@@ -45,6 +54,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       if (!billingUrl.searchParams.has("from")) {
         billingUrl.searchParams.set("from", url.pathname);
       }
+      try {
+        // eslint-disable-next-line no-console
+        console.warn("[app.loader] Billing required redirect", {
+          shop: url.searchParams.get("shop"),
+          pathname: url.pathname,
+          redirectTo: billingUrl.toString(),
+        });
+      } catch {}
       return redirect(billingUrl.toString());
     },
   });
