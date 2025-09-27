@@ -10,6 +10,7 @@ import { useEffect, useState } from "react";
 
 import { authenticate } from "../shopify.server";
 import { BASIC_PLAN, PRO_PLAN, SCALE_PLAN } from "../billing/plans";
+import { isBillingTestMode } from "../billing/config.server";
 
 export const links = () => [{ rel: "stylesheet", href: polarisStyles }];
 
@@ -37,7 +38,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   await billing.require({
     plans: [BASIC_PLAN, PRO_PLAN, SCALE_PLAN],
-    isTest: process.env.NODE_ENV !== "production",
+    isTest: isBillingTestMode(),
     onFailure: async () => {
       const billingUrl = new URL("/app/billing", url);
       billingUrl.search = url.search;

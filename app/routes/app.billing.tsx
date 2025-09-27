@@ -5,6 +5,7 @@ import { Page, Card, BlockStack, Text, InlineStack, Button, Badge, Banner } from
 import { authenticate } from "../shopify.server";
 import { BASIC_PLAN, PRO_PLAN, SCALE_PLAN } from "../billing/plans";
 import { getBillingSummary } from "../billing/summary.server";
+import { isBillingTestMode } from "../billing/config.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { billing, session, sessionToken } = await authenticate.admin(request);
@@ -115,7 +116,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return await billing.request({
       plan,
       returnUrl,
-      isTest: process.env.NODE_ENV !== "production",
+      isTest: isBillingTestMode(),
     });
   } catch (e: any) {
     if (e instanceof Response) {

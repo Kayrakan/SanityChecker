@@ -2,7 +2,7 @@
 
 client_id = "f935d4e94f7cb497bb0c7b8e996022a0"
 name = "ShipSense"
-application_url = "https://routers-copyright-friends-explained.trycloudflare.com"
+application_url = "https://ship-sentry-1018118244071.europe-west1.run.app"
 embedded = true
 
 [build]

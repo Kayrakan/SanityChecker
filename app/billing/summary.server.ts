@@ -4,6 +4,7 @@ import {
   PLAN_ORDER,
   type PlanId,
 } from "./plans";
+import { isBillingTestMode } from "./config.server";
 
 export type BillingSummary =
   | { mode: "development"; hasActivePayment: false }
@@ -40,7 +41,7 @@ export async function getBillingSummary({
 
   const status = await billing.check({
     plans: [...PLAN_ORDER],
-    isTest: process.env.NODE_ENV !== "production",
+    isTest: isBillingTestMode(),
   });
 
   const subscriptions: any[] = status?.appSubscriptions ?? [];

@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
 import { BASIC_PLAN, PRO_PLAN, SCALE_PLAN, PLAN_DISPLAY_INFO, PLAN_ORDER } from "../billing/plans";
+import { isBillingTestMode } from "../billing/config.server";
 import prisma from "../db.server";
 import { enqueueScenarioRunBull } from "../services/queue-bull.server";
 
@@ -18,7 +19,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   if (!bypassBilling) {
     billingState = await billing.require({
       plans: [BASIC_PLAN, PRO_PLAN, SCALE_PLAN],
-      isTest: process.env.NODE_ENV !== "production",
+      isTest: isBillingTestMode(),
       onFailure: async () => {
         const billingUrl = new URL("/app/billing", url);
         billingUrl.search = url.search;
@@ -49,7 +50,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   if (!bypassBilling) {
     billingState = await billing.require({
       plans: [BASIC_PLAN, PRO_PLAN, SCALE_PLAN],
-      isTest: process.env.NODE_ENV !== "production",
+      isTest: isBillingTestMode(),
       onFailure: async () => {
         const billingUrl = new URL("/app/billing", url);
         billingUrl.search = url.search;
