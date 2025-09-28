@@ -113,3 +113,10 @@ process.on("SIGTERM", async () => {
   await worker.close();
   process.exit(0);
 });
+
+import { createServer } from "node:http";
+
+createServer((_req, res) => {
+  res.writeHead(200, { "content-type": "text/plain" });
+  res.end("ok");
+}).listen(Number(process.env.PORT || "8080"));
