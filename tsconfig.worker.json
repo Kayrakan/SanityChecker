@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "dist/worker"
+  },
+  "include": [
+    "worker/**/*.ts",
+    "app/**/*.server.ts",
+    "app/**/*.server.tsx",
+    "app/db.server.ts",
+    "app/models/**/*.ts"
+  ],
+  "exclude": ["node_modules", "build", "dist"]
+}

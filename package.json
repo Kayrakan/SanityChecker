@@ -2,7 +2,7 @@
   "name": "sanity-checker",
   "private": true,
   "scripts": {
-    "build": "remix vite:build",
+    "build": "npm run build:app && npm run build:worker",
     "dev": "node ./scripts/prisma-predev.mjs && shopify app dev",
     "config:link": "shopify app config link",
     "generate": "shopify app generate",
@@ -20,7 +20,10 @@
     "worker": "tsx worker/bull.worker.ts",
     "redis:up": "docker compose up -d redis",
     "redis:down": "docker compose down",
-    "postinstall": "playwright install chromium"
+    "postinstall": "playwright install chromium",
+    "build:app": "remix vite:build",
+    "build:worker": "tsc --project tsconfig.worker.json",
+    "worker:prod": "node dist/worker/bull.worker.js"
   },
   "type": "module",
   "engines": {
