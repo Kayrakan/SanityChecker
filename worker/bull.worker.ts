@@ -10,6 +10,15 @@ const redis = new IORedis((bullConnection as any).url || (bullConnection as any)
 const LOCK_PREFIX = "run:lock:";
 const LOCK_TTL_MS = Number(process.env.SHOP_LOCK_TTL_MS || 600_000); // default 10 minutes
 
+
+import { createServer } from "node:http";
+
+createServer((_req, res) => {
+  res.writeHead(200, { "content-type": "text/plain" });
+  res.end("ok");
+}).listen(Number(process.env.PORT || "8080"));
+
+
 async function acquireShopLock(shopId: string) {
   const key = LOCK_PREFIX + shopId;
   const ok = await redis.set(key, "1", "PX", LOCK_TTL_MS, "NX");
@@ -113,10 +122,3 @@ process.on("SIGTERM", async () => {
   await worker.close();
   process.exit(0);
 });
-
-import { createServer } from "node:http";
-
-createServer((_req, res) => {
-  res.writeHead(200, { "content-type": "text/plain" });
-  res.end("ok");
-}).listen(Number(process.env.PORT || "8080"));
