@@ -4,19 +4,13 @@ import { runScenarioById } from "../app/services/runner.server";
 import { markStuckRunsAsError } from "../app/models/run.server";
 import prisma from "../app/db.server";
 import IORedis from "ioredis";
+import { createServer } from "node:http";
 
 // Simple per-shop lock to serialize runs per shop, avoiding API contention.
 const redis = new IORedis((bullConnection as any).url || (bullConnection as any));
 const LOCK_PREFIX = "run:lock:";
 const LOCK_TTL_MS = Number(process.env.SHOP_LOCK_TTL_MS || 600_000); // default 10 minutes
 
-
-import { createServer } from "node:http";
-
-createServer((_req, res) => {
-  res.writeHead(200, { "content-type": "text/plain" });
-  res.end("ok");
-}).listen(Number(process.env.PORT || "8080"));
 
 
 async function acquireShopLock(shopId: string) {
@@ -116,6 +110,12 @@ worker.on("completed", (job) => {
     } catch {}
   })();
 });
+
+// Lightweight HTTP server satisfies Cloud Run health checks.
+createServer((_req, res) => {
+  res.writeHead(200, { "content-type": "text/plain" });
+  res.end("ok");
+}).listen(Number(process.env.PORT || "8080"));
 
 // Keep process alive
 process.on("SIGTERM", async () => {
