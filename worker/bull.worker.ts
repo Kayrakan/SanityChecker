@@ -24,6 +24,10 @@ async function releaseShopLock(shopId: string) {
 }
 
 const concurrency = Number(process.env.WORKER_CONCURRENCY || 10);
+const idlePollSecondsRaw = Number(process.env.WORKER_IDLE_POLL_SECONDS);
+const stalledIntervalMsRaw = Number(process.env.WORKER_STALLED_INTERVAL_MS);
+const idlePollSeconds = Number.isFinite(idlePollSecondsRaw) && idlePollSecondsRaw > 0 ? idlePollSecondsRaw : 60;
+const stalledIntervalMs = Number.isFinite(stalledIntervalMsRaw) && stalledIntervalMsRaw > 0 ? stalledIntervalMsRaw : 300_000;
 
 // BullMQ v5+ does not require an explicit QueueScheduler; delayed/retry jobs are handled internally.
 
@@ -68,6 +72,9 @@ const worker = new Worker(
   {
     connection: bullConnection as any,
     concurrency,
+    // Slow down idle polling to reduce background Redis command usage.
+    drainDelay: idlePollSeconds,
+    stalledInterval: stalledIntervalMs,
   }
 );
 
