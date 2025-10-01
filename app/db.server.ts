@@ -25,19 +25,22 @@ async function connectWithRetry(client: PrismaClient) {
 
 function createClient() {
   const client = new PrismaClient();
-  void (async () => {
-    try {
-      await connectWithRetry(client);
-    } catch (error) {
-      console.error("Failed to connect to the database after retries", error);
+  const skipInitialConnect = process.env.PRISMA_SKIP_CONNECT_ON_BOOT === "1";
+  if (!skipInitialConnect) {
+    void (async () => {
       try {
-        await client.$disconnect();
-      } catch {
-        // ignore disconnect failures; we're exiting anyway
+        await connectWithRetry(client);
+      } catch (error) {
+        console.error("Failed to connect to the database after retries", error);
+        try {
+          await client.$disconnect();
+        } catch {
+          // ignore disconnect failures; we're exiting anyway
+        }
+        process.exit(1);
       }
-      process.exit(1);
-    }
-  })();
+    })();
+  }
   return client;
 }
 

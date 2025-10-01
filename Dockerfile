@@ -19,7 +19,7 @@ RUN npm remove @shopify/cli
 
 COPY . .
 
-RUN npm run build
+RUN PRISMA_SKIP_CONNECT_ON_BOOT=1 npm run build
 
 RUN npm prune --omit=dev && npm cache clean --force
 
